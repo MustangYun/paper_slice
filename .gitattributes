@@ -1,0 +1,33 @@
+# 줄바꿈 정규화: 저장소에는 LF로 저장하고 checkout 시 OS 기본을 따름.
+# Windows에서 작업하다가 커밋한 .sh가 CRLF로 컨테이너에 들어가서
+# `/usr/bin/env: 'bash\r': No such file or directory` 로 실패하는 사고를 막음.
+
+* text=auto eol=lf
+
+# Shell / Docker / Python: 무조건 LF.
+*.sh       text eol=lf
+*.bash     text eol=lf
+Dockerfile text eol=lf
+Dockerfile.* text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.py       text eol=lf
+*.toml     text eol=lf
+*.cfg      text eol=lf
+*.md       text eol=lf
+*.json     text eol=lf
+
+# PowerShell: Windows에서 주로 쓰이므로 CRLF로.
+*.ps1      text eol=crlf
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+
+# 바이너리: diff/줄바꿈 처리 금지.
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.pdf      binary
+*.zip      binary
+*.ico      binary
+*.woff     binary
+*.woff2    binary

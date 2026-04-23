@@ -1,0 +1,39 @@
+# Build context trim — 이미지 빌드 시 Docker 데몬으로 안 보내는 것들.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+build/
+dist/
+
+# Tests / caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Runtime artifacts — 빌드 컨텍스트에 들어갈 이유 없음
+output/
+scratch/
+tmp/
+*.log
+
+# Docs/meta
+README.md.bak
+*.bak

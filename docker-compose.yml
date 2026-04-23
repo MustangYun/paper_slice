@@ -1,0 +1,35 @@
+# docker compose: 로컬 개발용. macOS / Linux / Windows 모두 동일 명령으로 실행.
+#
+#   docker compose up --build      # CPU 이미지 빌드 후 실행
+#   docker compose up -d           # 백그라운드
+#   docker compose logs -f         # 로그 보기
+#   docker compose down            # 정리
+#
+# 상대 경로(`./output`, `./certs`)를 쓰므로 OS별 볼륨 마운트 문법 차이가 없습니다.
+# docker compose가 각 OS에 맞게 절대 경로로 바꿔서 전달.
+
+services:
+  paperslice:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 기업망 CA가 필요하면 `WITH_CORP_CA=1 docker compose build` 로 설정하거나
+        # 여기를 1로 바꾸세요. 그 경우 ./certs 안에 .crt 파일을 두어야 합니다.
+        WITH_CORP_CA: ${WITH_CORP_CA:-0}
+    image: paperslice:latest
+    container_name: paperslice
+    ports:
+      - "${PAPERSLICE_PORT:-8000}:8000"
+    volumes:
+      - ./output:/app/output
+    environment:
+      PAPERSLICE_OUTPUT_ROOT: /app/output
+      PAPERSLICE_SCRATCH_ROOT: /tmp/paperslice-scratch
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

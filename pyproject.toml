@@ -1,0 +1,69 @@
+[project]
+name = "paperslice"
+version = "0.1.0"
+description = "Newspaper PDF parser that slices scanned pages into article/ad/header units with provenance"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "paperslice contributors" }
+]
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Data validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # File handling
+    "pillow>=10.4.0",
+    "pymupdf>=1.24.0",
+]
+
+[project.optional-dependencies]
+# MinerU는 크기가 커서 install-optional로 뺀다. Docker 빌드에서 명시 설치.
+mineru = [
+    "mineru[pipeline]==3.0.9",
+]
+
+# GPU 가속이 필요한 경우 추가 설치
+gpu = [
+    "mineru[vlm]==3.0.9",
+]
+
+# 개발용
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",  # FastAPI 테스트용
+    "ruff>=0.7.0",
+    "mypy>=1.13.0",
+]
+
+# LLM 기반 분류 (향후)
+llm = [
+    "anthropic>=0.40.0",
+    "openai>=1.54.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paperslice"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "UP"]
+ignore = ["E501"]  # line too long은 black/포매터가 처리
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
