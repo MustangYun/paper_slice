@@ -97,9 +97,11 @@ RUN useradd --create-home --home-dir /home/paperslice --shell /usr/sbin/nologin 
     chown -R paperslice:paperslice /app /home/paperslice /tmp/paperslice-scratch
 
 USER paperslice
-EXPOSE 8000
+# v9: 기본 포트 8000 → 8100 (이슈 #2). 컨테이너 내부는 8100 고정,
+# 호스트 매핑은 docker-compose.yml 의 PAPERSLICE_PORT env 로 조정.
+EXPOSE 8100
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+    CMD curl -fsS http://127.0.0.1:8100/health || exit 1
 
-CMD ["uvicorn", "paperslice.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "paperslice.main:app", "--host", "0.0.0.0", "--port", "8100"]

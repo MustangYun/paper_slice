@@ -3,6 +3,37 @@
 v8 이후 운영 중 발견된 **CPU-only 환경에서의 OOM 크래시** 문제를 해결하기 위해 도입된
 변경 사항과 배포 절차.
 
+## ⚠️ 운영 변경점 — 기본 포트 8000 → 8100 (이슈 #2)
+
+v9 부터 컨테이너의 기본 서비스 포트가 **8100** 으로 바뀝니다. 사내에서 8000 번이
+이미 다른 서비스들과 충돌이 잦다는 이슈([#2](https://github.com/MustangYun/paper_slice/issues/2))
+반영. 컨테이너 내부 포트도 8100 으로 통일해 호스트/컨테이너 불일치 혼선을 제거했습니다.
+
+| 층위 | v8 | v9 |
+|---|---|---|
+| 컨테이너 내부 (uvicorn --port) | 8000 | **8100** |
+| Dockerfile `EXPOSE` / HEALTHCHECK URL | 8000 | **8100** |
+| docker-compose.yml 호스트 매핑 | `${PAPERSLICE_PORT:-8000}:8000` | **`${PAPERSLICE_PORT:-8100}:8100`** |
+| scripts/run_local.{sh,ps1} 기본 포트 | 8000 | **8100** |
+
+### 마이그레이션 — 기존 8000 을 유지해야 하는 경우
+호스트 쪽만 8000 으로 노출하는 env override:
+```bash
+PAPERSLICE_PORT=8000 docker compose up
+```
+이 경우에도 컨테이너 내부는 8100 이므로, 컨테이너에 직접 접근하는 클라이언트가
+있다면 8100 으로 가야 합니다. reverse proxy (nginx / Traefik) 뒤라면 upstream URL
+만 8100 으로 바꾸면 됩니다.
+
+### 전환 체크리스트
+- [ ] `docker compose down` 으로 기존 v8 컨테이너 중지
+- [ ] 본 가이드대로 v9 소스 반영 후 `docker compose build --no-cache`
+- [ ] `curl http://localhost:8100/health` 로 새 포트 동작 확인
+- [ ] 클라이언트/모니터링의 `:8000` hard-coded URL 확인 및 8100 으로 변경 (또는 위 env override)
+- [ ] K8s / CI/CD 파이프라인의 containerPort / targetPort 값을 8100 으로 갱신
+
+---
+
 ## 왜 v9 인가 — 해결한 4가지 근본 원인
 
 v8 기준으로 119 페이지 PDF(이슈 #3)는 `mineru-api` 워커가 OOM killer 에 맞아 죽으며
@@ -94,7 +125,7 @@ docker compose up -d
 docker compose logs paperslice | grep -E "CPU tuning|Uvicorn running"
 # 기대 출력 예:
 #   paperslice | INFO [paperslice.cpu_tuning] CPU tuning: threads=4 (source=cgroup_v2, cpu_count=8)
-#   paperslice | INFO:     Uvicorn running on http://0.0.0.0:8000
+#   paperslice | INFO:     Uvicorn running on http://0.0.0.0:8100
 ```
 
 ### Windows (PowerShell)
@@ -162,7 +193,7 @@ docker exec $(docker compose ps -q paperslice) env | grep -E "^(OMP|MKL|OPENBLAS
 ### 페이지 청킹이 도는지 (10 페이지 초과 PDF)
 
 ```bash
-curl -s -X POST http://localhost:8000/parse \
+curl -s -X POST http://localhost:8100/parse \
   -F "file=@big_sample_119p.pdf" \
   -F "language=korean" -F "mode=auto" -o /dev/null
 
@@ -177,7 +208,7 @@ docker compose logs paperslice | grep -E "MinerU chunk|chunk 결과 병합"
 ### 10 페이지 이하 PDF 는 청킹이 스킵되는지
 
 ```bash
-curl -s -X POST http://localhost:8000/parse \
+curl -s -X POST http://localhost:8100/parse \
   -F "file=@small_8p.pdf" -o /dev/null
 
 docker compose logs paperslice | grep -E "\[2/8\]" | tail -2
@@ -208,7 +239,7 @@ pytest -v
 
 ### 16 GB / 8 vCPU 박스 (throughput 중심)
 ```bash
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   --cpus=8 --memory=16g \
   -e PAPERSLICE_CPU_THREADS=6 \
   -e PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=2 \
@@ -218,7 +249,7 @@ docker run --rm -p 8000:8000 \
 
 ### 4 GB / 2 vCPU 극소형 박스
 ```bash
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   --cpus=2 --memory=4g \
   -e PAPERSLICE_CPU_THREADS=2 \
   -e PAPERSLICE_CHUNK_PAGES=3 \
@@ -230,7 +261,7 @@ docker run --rm -p 8000:8000 \
 ### GPU 박스로 돌릴 때 (v9 기능 비활성화)
 CPU 튜닝 / 청킹 은 GPU 에서도 무해하지만, 필요 시 비활성화:
 ```bash
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   --gpus all \
   -e PAPERSLICE_DEFAULT_BACKEND=vlm \
   -e PAPERSLICE_MINERU_DEVICE_MODE=cuda \
