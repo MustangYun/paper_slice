@@ -5,7 +5,8 @@
 set -euo pipefail
 
 : "${PAPERSLICE_HOST:=0.0.0.0}"
-: "${PAPERSLICE_PORT:=8000}"
+# v9: 기본 포트 8000 → 8100 (이슈 #2).
+: "${PAPERSLICE_PORT:=8100}"
 
 exec uvicorn paperslice.main:app \
   --host "$PAPERSLICE_HOST" \

@@ -69,7 +69,15 @@ class Settings(BaseSettings):
 
     # --- Server ---
     host: str = Field(default="0.0.0.0")
-    port: int = Field(default=8000)
+    port: int = Field(
+        default=8100,
+        description=(
+            "기본 서비스 포트. v9 에서 8000 → 8100 으로 변경 (이슈 #2). "
+            "docker compose 의 호스트 측 매핑에 사용. 컨테이너 내부는 8100 고정. "
+            "구버전 호환이 필요하면 `PAPERSLICE_PORT=8000 docker compose up` 으로 "
+            "호스트 쪽만 8000 으로 노출 가능."
+        ),
+    )
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: ["*"],
         description="CORS allowed origins. Set to your frontend domain in prod.",

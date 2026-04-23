@@ -21,9 +21,11 @@
 ### 주요 기능
 - **다국어 OCR** — 한국어 / 일본어 / 중국어(간·번체) / 영어 등 PaddleOCR이 지원하는 언어 전부.
 - **세로쓰기 자동 감지 (v8)** — PyMuPDF로 PDF를 먼저 살펴 세로쓰기·스캔본이면 자동으로 OCR 경로로 분기.
-- **CPU 자동 튜닝 (v9)** — 컨테이너 기동 시 cgroup / CPU affinity 를 탐지해 OMP/MKL/OpenBLAS/torch 스레드를 [2, 8] 로 자동 캡. vCPU 폭주로 인한 메모리 터짐 방지.
-- **페이지 단위 청킹 (v9)** — 큰 PDF(기본 10페이지 초과)를 5페이지 단위로 쪼개 MinerU 를 여러 번 호출. 한 호출의 피크 메모리가 chunk 크기에 비례해 내려가 **CPU-only 8GB 박스에서도 119페이지 PDF 완주** 가능.
-- **OOM 자동 재시도 (v9)** — MinerU stderr 에서 `OutOfMemoryError` / `Killed` / `RemoteDisconnected` / `ConnectionReset` 등이 감지되면 `MINERU_VIRTUAL_VRAM_SIZE` 를 반감해 재시도.
+- **CPU 자동 튜닝 (v9, [이슈 #3](https://github.com/MustangYun/paper_slice/issues/3) / [#4](https://github.com/MustangYun/paper_slice/issues/4))** — 컨테이너 기동 시 cgroup / CPU affinity 를 탐지해 OMP/MKL/OpenBLAS/torch 스레드를 [2, 8] 로 자동 캡. vCPU 폭주로 인한 메모리 터짐 방지.
+- **페이지 단위 청킹 (v9, [이슈 #3](https://github.com/MustangYun/paper_slice/issues/3) / [#4](https://github.com/MustangYun/paper_slice/issues/4))** — 큰 PDF(기본 10페이지 초과)를 5페이지 단위로 쪼개 MinerU 를 여러 번 호출. 한 호출의 피크 메모리가 chunk 크기에 비례해 내려가 **CPU-only 8GB 박스에서도 119페이지 PDF 완주** 가능.
+- **OOM 자동 재시도 (v9, [이슈 #3](https://github.com/MustangYun/paper_slice/issues/3))** — MinerU stderr 에서 `OutOfMemoryError` / `Killed` / `RemoteDisconnected` / `ConnectionReset` 등이 감지되면 `MINERU_VIRTUAL_VRAM_SIZE` 를 반감해 재시도.
+- **MinerU 모델 프리베이크 (v9, [이슈 #1](https://github.com/MustangYun/paper_slice/issues/1))** — Docker 빌드 중 pipeline 모델을 이미지에 구워 넣어 첫 요청의 수 GB 다운로드를 제거. 폐쇄망 빌드면 `|| echo WARNING` 으로 빌드 자체는 성공.
+- **기본 포트 8100 (v9, [이슈 #2](https://github.com/MustangYun/paper_slice/issues/2))** — 사내망에서 흔히 충돌하던 8000 대신 8100 을 기본으로. `PAPERSLICE_PORT=8000` 으로 구버전 호환 가능.
 - **기사 단위 세그멘테이션** — column 검출 후 헤드라인-본문-이미지를 한 노드로 묶음.
 - **Provenance 보존** — 모든 텍스트 블록과 이미지에 원본 페이지 번호와 bbox가 그대로 붙음.
 - **이미지 자산 관리** — 추출된 이미지를 `output/<document_id>/images/` 에 영구 저장 + 다운로드 API.
@@ -32,9 +34,11 @@
 - **Cross-platform Docker** — macOS / Linux / Windows에서 동일한 `docker compose up --build`.
 
 ### 이 브랜치 (`claude/cross-platform-docker-fi22j`) 에서 한 것
-원본 v8은 Windows에서만 검증되어 있었습니다. 이 브랜치는 소스 변경 없이 빌드·실행·
-문서를 손봐 **macOS / Linux / Windows 동일 명령어로 돌아가게** 만든 판입니다
+원본 v8은 Windows에서만 검증되어 있었습니다. 이 브랜치는 빌드·실행·문서를 손봐
+**macOS / Linux / Windows 동일 명령어로 돌아가게** 만든 판입니다
 (`.gitattributes` 라인엔딩 정규화, bash/PowerShell 스크립트 페어, Apple Silicon 자동 `--platform=linux/amd64`, 상대경로 `docker-compose.yml` 등).
+v9 업데이트가 같이 머지되면서 **CPU 자동 튜닝 · 페이지 청킹 · 모델 프리베이크 · 기본 포트 8100**
+도 여기에 포함돼 있습니다 — [주요 기능](#주요-기능) / [CPU 전용 운영 가이드 (v9)](#cpu-전용-운영-가이드-v9) 참고.
 
 ---
 
@@ -42,7 +46,8 @@
 
 ### 공통 전제
 - Docker Desktop (Windows/macOS) 또는 Docker Engine (Linux)
-- 8000 포트 사용 가능
+- **8100 포트 사용 가능** *(v9 에서 기본값이 8000 → 8100 으로 변경, [이슈 #2](https://github.com/MustangYun/paper_slice/issues/2))*
+  - 구버전 호환이 필요하면 `PAPERSLICE_PORT=8000 docker compose up` 으로 호스트 쪽만 8000 으로 노출 가능 (컨테이너 내부는 8100 고정).
 
 ### macOS / Linux
 
@@ -53,7 +58,7 @@ cd paper_slice
 
 # 빌드 + 실행 (가장 간단)
 docker compose up --build
-# → http://localhost:8000/docs 로 접속
+# → http://localhost:8100/docs 로 접속
 ```
 
 스크립트를 직접 쓰고 싶다면:
@@ -197,6 +202,7 @@ MinerU가 그대로 PaddleOCR에 전달하는 언어 코드.
 | `PAPERSLICE_OUTPUT_ROOT` | `/app/output` | 컨테이너 내부의 영구 출력 경로. 보통 볼륨 마운트. |
 | `PAPERSLICE_SCRATCH_ROOT` | `/tmp/paperslice-scratch` | 요청별 임시 작업 디렉터리. 끝나면 삭제. |
 | `PAPERSLICE_MAX_UPLOAD_MB` | `100` | PDF 업로드 최대 크기. |
+| `PAPERSLICE_PORT` | `8100` | **v9 변경** ([이슈 #2](https://github.com/MustangYun/paper_slice/issues/2)): 기본 서비스 포트 (이전 8000). `docker-compose.yml` 의 호스트→컨테이너 매핑에 사용. 컨테이너 내부는 8100 고정이므로 `PAPERSLICE_PORT=8000 docker compose up` 으로 호스트만 8000 으로 노출 가능. |
 | `PAPERSLICE_MINERU_TIMEOUT_SEC` | `1800` | MinerU 1회 실행 타임아웃 (초). 첫 실행 시 모델 다운로드가 있어서 길게 잡음. |
 | `PAPERSLICE_CORS_ALLOW_ORIGINS` | `["*"]` | CORS allowed origins. 운영 환경에서는 프론트 도메인으로 좁히세요. |
 | `PAPERSLICE_MINERU_BIN` | `mineru` | MinerU CLI 바이너리 경로. |
@@ -223,14 +229,14 @@ MinerU가 그대로 PaddleOCR에 전달하는 언어 코드.
 예:
 ```bash
 # 사용량이 적은 공유 서버에서 타임아웃 줄이고 업로드 제한 올리기
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   -e PAPERSLICE_MAX_UPLOAD_MB=200 \
   -e PAPERSLICE_MINERU_TIMEOUT_SEC=600 \
   -e PAPERSLICE_STRICT_GPU=true \
   paperslice:latest
 
 # 16GB RAM / 8 vCPU 박스에서 throughput 올리기 (v9)
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   --cpus=8 --memory=16g \
   -e PAPERSLICE_CPU_THREADS=6 \
   -e PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=2 \
@@ -238,7 +244,7 @@ docker run --rm -p 8000:8000 \
   paperslice:latest
 
 # 4GB 초저메모리 박스에서 안정화 — chunk 더 작게, vram 더 낮게
-docker run --rm -p 8000:8000 \
+docker run --rm -p 8100:8100 \
   --cpus=2 --memory=4g \
   -e PAPERSLICE_CPU_THREADS=2 \
   -e PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=1 \
@@ -390,13 +396,13 @@ docker compose up --build
 ```
 성공 로그:
 ```
-paperslice  | INFO:     Uvicorn running on http://0.0.0.0:8000
+paperslice  | INFO:     Uvicorn running on http://0.0.0.0:8100
 paperslice  | INFO:     Application startup complete.
 ```
 
 ### 2) `/docs` (Swagger UI)에서 인터랙티브 테스트
 
-브라우저로 **http://localhost:8000/docs** 열기.
+브라우저로 **http://localhost:8100/docs** 열기.
 
 1. `POST /parse` 패널을 클릭 → **Try it out**
 2. `file` 슬롯에 PDF 파일 업로드 (드래그 또는 Choose File)
@@ -416,19 +422,19 @@ paperslice  | INFO:     Application startup complete.
 
 ```bash
 # 헬스 체크
-curl -s http://localhost:8000/health
+curl -s http://localhost:8100/health
 # → {"status":"ok"}
 
 # 런타임 정보
-curl -s http://localhost:8000/info | python3 -m json.tool
+curl -s http://localhost:8100/info | python3 -m json.tool
 
 # PDF 파싱 (가장 기본)
-curl -s -X POST http://localhost:8000/parse \
+curl -s -X POST http://localhost:8100/parse \
   -F "file=@/path/to/sample.pdf" \
   | python3 -m json.tool > result.json
 
 # 일본 신문 PDF, 세로쓰기, auto 모드
-curl -s -X POST http://localhost:8000/parse \
+curl -s -X POST http://localhost:8100/parse \
   -F "file=@/path/to/nikkan.pdf" \
   -F "language=japan" \
   -F "reading_direction=rtl" \
@@ -436,7 +442,7 @@ curl -s -X POST http://localhost:8000/parse \
   | python3 -m json.tool > nikkan_result.json
 
 # 한국어 논문, txt 강제, diff 리포트 포함
-curl -s -X POST http://localhost:8000/parse \
+curl -s -X POST http://localhost:8100/parse \
   -F "file=@/path/to/paper.pdf" \
   -F "language=korean" \
   -F "mode=txt" \
@@ -444,16 +450,16 @@ curl -s -X POST http://localhost:8000/parse \
   | python3 -m json.tool > paper_result.json
 
 # 파싱 결과에서 document_id만 뽑기
-DOC_ID=$(curl -s -X POST http://localhost:8000/parse \
+DOC_ID=$(curl -s -X POST http://localhost:8100/parse \
   -F "file=@sample.pdf" | python3 -c "import sys,json;print(json.load(sys.stdin)['document_id'])")
 echo "document_id=$DOC_ID"
 
 # 특정 페이지의 raw MinerU 블록 보기
-curl -s "http://localhost:8000/documents/$DOC_ID/pages/1/blocks" \
+curl -s "http://localhost:8100/documents/$DOC_ID/pages/1/blocks" \
   | python3 -m json.tool
 
 # 그 문서의 raw artifact 목록
-curl -s "http://localhost:8000/documents/$DOC_ID/raw" | python3 -m json.tool
+curl -s "http://localhost:8100/documents/$DOC_ID/raw" | python3 -m json.tool
 ```
 
 #### Windows PowerShell
@@ -462,10 +468,10 @@ curl -s "http://localhost:8000/documents/$DOC_ID/raw" | python3 -m json.tool
 
 ```powershell
 # 헬스 체크
-curl.exe -s http://localhost:8000/health
+curl.exe -s http://localhost:8100/health
 
 # PDF 파싱
-curl.exe -s -X POST http://localhost:8000/parse `
+curl.exe -s -X POST http://localhost:8100/parse `
   -F "file=@C:\Users\User-1\Documents\sample.pdf" `
   -F "language=japan" `
   -F "reading_direction=rtl" `
@@ -478,14 +484,14 @@ Get-Content result.json | ConvertFrom-Json | ConvertTo-Json -Depth 10
 
 ```powershell
 # 헬스
-Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:8100/health
 
 # 런타임 정보
-Invoke-RestMethod http://localhost:8000/info | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://localhost:8100/info | ConvertTo-Json -Depth 5
 
 # PDF 파싱 (PS 7.0+에서 -Form 지원)
 $response = Invoke-RestMethod `
-    -Uri http://localhost:8000/parse `
+    -Uri http://localhost:8100/parse `
     -Method POST `
     -Form @{
         file              = Get-Item C:\Users\User-1\Documents\sample.pdf
@@ -498,7 +504,7 @@ Write-Host "document_id = $($response.document_id)"
 
 # 특정 페이지 블록
 $docId = $response.document_id
-Invoke-RestMethod "http://localhost:8000/documents/$docId/pages/1/blocks" `
+Invoke-RestMethod "http://localhost:8100/documents/$docId/pages/1/blocks" `
   | ConvertTo-Json -Depth 10
 ```
 
@@ -506,10 +512,10 @@ Invoke-RestMethod "http://localhost:8000/documents/$docId/pages/1/blocks" `
 
 ```cmd
 :: 헬스
-curl -s http://localhost:8000/health
+curl -s http://localhost:8100/health
 
 :: PDF 파싱 (CMD는 줄바꿈 이어쓰기 ^)
-curl -s -X POST http://localhost:8000/parse ^
+curl -s -X POST http://localhost:8100/parse ^
   -F "file=@C:\Users\User-1\Documents\sample.pdf" ^
   -F "language=japan" ^
   -F "reading_direction=rtl" ^
@@ -551,7 +557,7 @@ type result.json
 }
 ```
 
-자세한 필드 정의는 [`/docs`](http://localhost:8000/docs) 또는 `src/paperslice/schemas.py` 참조.
+자세한 필드 정의는 [`/docs`](http://localhost:8100/docs) 또는 `src/paperslice/schemas.py` 참조.
 
 ### 5) 실행 상태 확인 & 정리
 
@@ -602,7 +608,7 @@ pytest -v
 
 ```bash
 # 1) /info 에 v9 전용 필드가 보이면 성공
-curl -s http://localhost:8000/info | python3 -m json.tool
+curl -s http://localhost:8100/info | python3 -m json.tool
 # 기대 출력 (발췌):
 #   "cpu_tuning": { "threads": 4, "source": "affinity", "raw_cpu_count": 4 },
 #   "mineru_config": {
@@ -614,7 +620,7 @@ docker compose logs paperslice | grep "CPU tuning"
 # → CPU tuning: threads=4 (source=cgroup_v2, cpu_count=16)
 
 # 3) /docs 상단 설명에 "### v9 변경 (CPU 최적화)" 블록이 보이면 성공
-open http://localhost:8000/docs   # macOS
+open http://localhost:8100/docs   # macOS
 ```
 
 세 가지 중 하나라도 안 보이면 이미지/컨테이너가 구버전입니다.
@@ -685,7 +691,7 @@ open http://localhost:8000/docs   # macOS
 
 디버깅에 도움이 되는 엔드포인트:
 ```bash
-curl -s http://localhost:8000/info
+curl -s http://localhost:8100/info
 # → {"gpu_available": false, ...}
 
 docker compose logs paperslice 2>&1 | grep -E "CPU tuning|MinerU attempt|chunk"
