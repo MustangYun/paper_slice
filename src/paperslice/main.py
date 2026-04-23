@@ -25,12 +25,16 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__
 from .config import MineruBackend, settings
+from .cpu_tuning import apply_in_process_thread_caps
 from .mineru_runner import MineruError, _gpu_available, get_mineru_version
 from .pipeline import parse_pdf
 from .schemas import ParseMode, ParseResponse
 from .utils.logging import setup_logging
 
 setup_logging()
+# torch 가 처음 import 되기 전에 스레드 캡을 걸어야 OMP/MKL 이 적은 스레드로
+# 올라온다. _gpu_available() 에서 torch 를 import 하므로 그 전에 호출.
+apply_in_process_thread_caps()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(

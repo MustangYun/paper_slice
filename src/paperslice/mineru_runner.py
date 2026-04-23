@@ -6,6 +6,11 @@ CLI changes, this is the single file that needs to follow along.
 v7 변경점:
 - run_mineru가 `method` 파라미터를 명시적으로 받음 (이전엔 하드코딩된 'ocr')
 - pipeline.py에서 method를 결정해서 넘겨주는 구조로 바뀜
+
+v9 변경점:
+- 모든 호출에 cpu_tuning.build_mineru_env() 로 만든 env 를 주입
+  (OMP/MKL/torch 스레드 캡 + MINERU_DEVICE_MODE=cpu + VIRTUAL_VRAM_SIZE)
+- OOM / 연결 리셋 stderr 패턴이 감지되면 virtual_vram_gb 를 반감해 재시도
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import MineruBackend, settings
+from .cpu_tuning import build_mineru_env, detect_cpu_tuning
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +32,31 @@ GPU_BACKENDS: set[MineruBackend] = {MineruBackend.vlm, MineruBackend.hybrid}
 
 # Methods accepted by the pipeline backend's -m flag.
 _VALID_METHODS = {"auto", "ocr", "txt"}
+
+# MinerU 서브프로세스가 OOM 으로 kill 될 때 stderr 에 남는 시그니처들.
+# urllib3 의 RemoteDisconnected / ConnectionResetError 는 mineru-api 워커가
+# 메모리 부족으로 죽었을 때 CLI 쪽에서 관측되는 증상.
+_OOM_MARKERS: tuple[str, ...] = (
+    "outofmemoryerror",
+    "memoryerror",
+    "killed",
+    "signal 9",
+    "sigkill",
+    "remotedisconnected",
+    "connectionreseterror",
+    "connection aborted",
+    "connection reset",
+    "worker was killed",
+    "cannot allocate memory",
+)
+
+
+def _looks_like_oom(stderr: str) -> bool:
+    """stderr 에 OOM / 워커 사망 시그니처가 포함됐는지."""
+    if not stderr:
+        return False
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _OOM_MARKERS)
 
 
 class MineruError(RuntimeError):
@@ -119,24 +150,62 @@ def run_mineru(
         method_used = method
 
     logger.info("Running MinerU: %s", " ".join(cmd))
-    try:
-        completed = subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=settings.mineru_timeout_sec,
+    tuning = detect_cpu_tuning()
+    attempts = max(1, settings.mineru_retry_on_oom + 1)
+    vram_gb = max(1, settings.mineru_virtual_vram_gb)
+    completed: subprocess.CompletedProcess[str] | None = None
+    last_error: MineruError | None = None
+
+    for attempt in range(1, attempts + 1):
+        env = build_mineru_env(
+            extra={"MINERU_VIRTUAL_VRAM_SIZE": str(vram_gb)},
         )
-    except subprocess.CalledProcessError as e:
-        raise MineruError(
-            f"MinerU exited with code {e.returncode}",
-            stdout=e.stdout or "",
-            stderr=e.stderr or "",
-        ) from e
-    except subprocess.TimeoutExpired as e:
-        raise MineruError(
-            f"MinerU timed out after {settings.mineru_timeout_sec}s",
-        ) from e
+        logger.info(
+            "MinerU attempt %d/%d: threads=%d vram_gb=%d device=%s",
+            attempt,
+            attempts,
+            tuning.threads,
+            vram_gb,
+            settings.mineru_device_mode,
+        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=settings.mineru_timeout_sec,
+                env=env,
+            )
+            break
+        except subprocess.TimeoutExpired as e:
+            # Timeout 은 메모리가 아니라 시간 문제 — 재시도해도 의미 없음.
+            raise MineruError(
+                f"MinerU timed out after {settings.mineru_timeout_sec}s",
+            ) from e
+        except subprocess.CalledProcessError as e:
+            err = MineruError(
+                f"MinerU exited with code {e.returncode}",
+                stdout=e.stdout or "",
+                stderr=e.stderr or "",
+            )
+            if attempt < attempts and _looks_like_oom(err.stderr):
+                next_vram = max(1, vram_gb // 2)
+                logger.warning(
+                    "MinerU attempt %d failed with OOM-like stderr "
+                    "(stderr tail: %s); retrying with vram_gb=%d",
+                    attempt,
+                    (err.stderr or "")[-400:],
+                    next_vram,
+                )
+                vram_gb = next_vram
+                last_error = err
+                continue
+            raise err from e
+
+    if completed is None:
+        # 이론상 도달 불가 — for-loop 이 성공 또는 raise 로 빠져나옴.
+        raise last_error or MineruError("MinerU failed after retries")
 
     logger.debug("MinerU stdout: %s", completed.stdout[:500])
     content_list_path = _find_content_list(output_dir)
@@ -173,6 +242,7 @@ def get_mineru_version() -> str:
             capture_output=True,
             text=True,
             timeout=10,
+            env=build_mineru_env(),
         )
         return result.stdout.strip() or "unknown"
     except (subprocess.SubprocessError, FileNotFoundError):

@@ -85,6 +85,75 @@ class Settings(BaseSettings):
         description="Timeout for a single MinerU invocation.",
     )
 
+    # --- CPU tuning (auto-applied at MinerU invocation) ---
+    # v9: CPU-only 배포에서 메모리 터짐/스레드 폭주를 막기 위한 튜닝 파라미터.
+    # None / 기본값이면 cpu_tuning.detect_cpu_tuning() 이 cgroup·affinity·cpu_count
+    # 순으로 탐지해 [2, 8]로 클램프한 값을 사용한다.
+    cpu_threads: int | None = Field(
+        default=None,
+        description=(
+            "Thread cap applied to OMP/MKL/OpenBLAS/NUMEXPR/torch. "
+            "None = auto (cgroup quota → sched_getaffinity → cpu_count, "
+            "clamped to [2, 8])."
+        ),
+    )
+    mineru_virtual_vram_gb: int = Field(
+        default=1,
+        description=(
+            "Value passed as MINERU_VIRTUAL_VRAM_SIZE to MinerU. "
+            "Controls its internal window_size/batch heuristic. 1 is safe "
+            "for ~8GB RAM hosts; only raise if you have >=16GB free."
+        ),
+    )
+    mineru_device_mode: str = Field(
+        default="cpu",
+        description="Passed as MINERU_DEVICE_MODE. 'cpu' forces CPU paths.",
+    )
+    mineru_model_source: str = Field(
+        default="modelscope",
+        description=(
+            "Passed as MINERU_MODEL_SOURCE. 'modelscope' or 'huggingface'."
+        ),
+    )
+    mineru_formula_enable: bool = Field(
+        default=False,
+        description=(
+            "Passed as MINERU_FORMULA_ENABLE. Off by default on CPU — "
+            "formula detection is expensive and rarely useful for newspapers."
+        ),
+    )
+    mineru_table_enable: bool = Field(
+        default=True,
+        description="Passed as MINERU_TABLE_ENABLE.",
+    )
+    mineru_retry_on_oom: int = Field(
+        default=1,
+        description=(
+            "Number of extra retries when MinerU stderr indicates OOM or "
+            "connection reset. Each retry halves virtual_vram_gb (min 1)."
+        ),
+    )
+
+    # --- Page-level chunking (v9) ---
+    # 문서를 작은 페이지 묶음으로 쪼개 MinerU를 여러 번 호출하면 한 번의 피크
+    # 메모리가 [chunk_size] 페이지 분량으로 줄어들어 OOM을 근본적으로 회피할 수
+    # 있다. 결과 content_list는 page_idx를 오프셋해 합친다.
+    chunk_pages: int = Field(
+        default=5,
+        description=(
+            "Pages per MinerU invocation. Lower = smaller peak memory but "
+            "more subprocess overhead. Set to 0 to disable chunking "
+            "(legacy single-call mode)."
+        ),
+    )
+    chunk_threshold_pages: int = Field(
+        default=10,
+        description=(
+            "Only chunk when the PDF has strictly more than this many "
+            "pages. Small PDFs skip the splitting overhead."
+        ),
+    )
+
 
 # Module-level singleton. Import this everywhere.
 settings = Settings()
