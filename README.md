@@ -48,26 +48,136 @@ docker compose up --build
 
 ---
 
-## 주요 엔드포인트
+## API 엔드포인트
 
-| Method | Path | 역할 |
+| Method | Path | Tag | 역할 |
+|---|---|---|---|
+| `GET` | `/health` | meta | liveness probe. 항상 `{"status":"ok"}` |
+| `GET` | `/info` | meta | 버전, GPU 유무 등 런타임 메타데이터 |
+| `POST` | `/parse` | core | **PDF 업로드 → 구조화된 기사 JSON** (주 엔드포인트) |
+| `GET` | `/documents/{id}/pages/{n}/blocks` | debug | 특정 페이지의 원본 MinerU 블록 덤프 |
+| `GET` | `/documents/{id}/raw` | debug | 이 문서의 MinerU raw artifact 목록 |
+| `GET` | `/documents/{id}/raw/{file_path}` | debug | 개별 raw artifact 다운로드 |
+| `GET` | `/docs` | — | OpenAPI / Swagger UI (모든 파라미터 설명 포함) |
+| `GET` | `/redoc` | — | ReDoc UI (읽기용) |
+| `GET` | `/openapi.json` | — | OpenAPI 스키마 원본 |
+
+---
+
+## 파라미터 레퍼런스
+
+> 💡 동일한 설명이 **`/docs` Swagger UI에도 자동으로 나옵니다** — FastAPI가 아래
+> 정의를 OpenAPI 스키마로 변환하기 때문입니다. 필드 옆의 `i` 아이콘을 클릭하면 바로 읽을 수 있어요.
+
+### `POST /parse` — Form 필드
+
+`Content-Type: multipart/form-data`. 모든 값 필드는 form 필드(JSON body 아님)로 전송.
+
+| 이름 | 타입 | 필수 | 기본값 | 설명 |
+|---|---|---|---|---|
+| **`file`** | `File` (PDF) | ✅ 필수 | — | 파싱할 PDF 파일. 확장자 `.pdf` 필수. 최대 `100 MB` (초과 시 `413`). |
+| **`backend`** | enum | 선택 | 서버의 `default_backend` (보통 `pipeline`) | MinerU 백엔드 선택. [`pipeline` / `vlm` / `hybrid`](#backend-옵션-상세) |
+| **`language`** | string | 선택 | 서버의 `default_language` (보통 `japan`) | OCR 언어 코드. 아래 표 참고. |
+| **`mode`** | enum | 선택 | `auto` | 파싱 방식. `pipeline` 백엔드에서만 의미 있음. [상세](#mode-옵션-상세) |
+| **`diff_report`** | bool | 선택 | `false` | OCR vs 텍스트 레이어 비교 리포트 포함 여부. **true면 시간 2배.** |
+| **`reading_direction`** | enum-like string | 선택 | `ltr` | 기사 column 읽는 방향. `ltr` 또는 `rtl`. [상세](#reading_direction-옵션-상세) |
+
+#### `backend` 옵션 상세
+
+| 값 | 하드웨어 | 정확도 | 속도 | 용도 |
+|---|---|---|---|---|
+| `pipeline` *(기본)* | CPU OK | ~82%+ | 빠름 | 일반적인 경우. 대부분 이걸 쓰세요. |
+| `vlm` | **GPU 필수** | ~90%+ | 느림, VRAM 많음 | 고정밀이 필요할 때. 비전-언어 모델. |
+| `hybrid` | **GPU 필수** | ~88%+ | 중간 | pipeline + vlm 혼합. |
+
+GPU가 없는데 `vlm`/`hybrid`를 요청하면:
+- `PAPERSLICE_STRICT_GPU=true`: `500 mineru_failure`로 즉시 실패.
+- `PAPERSLICE_STRICT_GPU=false` *(기본)*: 경고 로그 찍고 `pipeline`으로 **조용히 폴백**. 응답 `quality.warnings[]`에 사유가 들어감.
+
+#### `language` 옵션 상세
+
+MinerU가 그대로 PaddleOCR에 전달하는 언어 코드.
+
+| 값 | 대상 |
+|---|---|
+| `japan` *(기본)* | 일본어 + 한자 |
+| `korean` | 한국어 |
+| `en` | 영어 |
+| `ch` | 중국어 (간체 + 번체 공용) |
+| `fr`, `de`, `es`, `pt`, `ru`, `ar`, ... | PaddleOCR이 지원하는 기타 언어 |
+
+**주의**: 여러 언어가 섞인 문서면 **지배적인 하나**만 지정. 잘못 지정 시 OCR 품질이 크게 떨어집니다.
+
+#### `mode` 옵션 상세
+
+| 값 | 동작 | 언제 쓰는지 |
 |---|---|---|
-| `GET` | `/health` | liveness probe |
-| `GET` | `/info` | 런타임 메타 (버전, GPU 유무 등) |
-| `POST` | `/parse` | PDF 업로드 → 구조화된 기사 JSON |
-| `GET` | `/documents/{id}/pages/{n}/blocks` | 원본 MinerU 블록 덤프 |
-| `GET` | `/documents/{id}/raw` | MinerU raw artifact 목록 |
-| `GET` | `/docs` | OpenAPI / Swagger UI |
+| `auto` *(기본)* | PyMuPDF로 PDF를 1회 살펴서 `ocr`/`txt` 자동 선택. 스캔본 또는 세로쓰기 감지 시 `ocr`. | **거의 항상 이걸 쓰세요.** |
+| `ocr` | 무조건 OCR. | 스캔 PDF 확실, 또는 auto가 잘못 판별하는 예외 케이스. |
+| `txt` | PDF 텍스트 레이어 직접 추출. 빠르고 정확. | **디지털 가로쓰기 PDF 확실**할 때만. ⚠️ 세로쓰기에 쓰면 글자 누락(MinerU 버그). |
 
-`POST /parse`의 주요 폼 필드:
+`vlm`/`hybrid` 백엔드에서는 `mode`가 무시됨.
 
-- `file` (필수) — PDF
-- `mode` — `auto`(기본) / `ocr` / `txt`
-- `reading_direction` — `ltr`(기본) / `rtl` (일본·중국 신문)
-- `language` — OCR 언어 (`japan`, `korean`, `en`, …)
-- `diff_report` — true면 ocr/txt 둘 다 돌려 차이 리포트 포함 (2배 느림)
+#### `reading_direction` 옵션 상세
 
-자세한 필드는 `/docs`에서 확인.
+| 값 | 설명 | 예시 |
+|---|---|---|
+| `ltr` *(기본)* | left-to-right — 왼쪽 column부터 | 한국 신문/논문, 영문 보고서, 대부분의 디지털 문서 |
+| `rtl` | right-to-left — 오른쪽 column부터 | 일본·중국·대만 **전통 신문** (세로쓰기 + 오른쪽→왼쪽) |
+
+**영향 범위**: 기사 순서와 "가로 헤드라인 ↔ 아래 본문 column" 매칭에 영향. 한 column 안의 텍스트 순서는 방향과 무관하게 동일.
+
+잘못된 값(`ltr`/`rtl` 외)을 넣으면 `400 Bad Request`.
+
+---
+
+### `GET /documents/{document_id}/pages/{page_number}/blocks` — Path 파라미터
+
+| 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `document_id` | string | ✅ | `POST /parse` 응답의 `document_id`. `/`, `\\`, `..` 포함 시 400. |
+| `page_number` | int | ✅ | **1-based** 페이지 번호. 1 미만이면 400. |
+
+### `GET /documents/{document_id}/raw` — Path 파라미터
+
+| 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `document_id` | string | ✅ | `POST /parse` 응답의 `document_id`. |
+
+### `GET /documents/{document_id}/raw/{file_path}` — Path 파라미터
+
+| 이름 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| `document_id` | string | ✅ | `POST /parse` 응답의 `document_id`. |
+| `file_path` | string | ✅ | `GET /documents/{id}/raw` 응답의 `relative_path`. `..` 시작 또는 `/`로 시작하면 400. |
+
+---
+
+### 서버 설정 (환경변수)
+
+컨테이너 기동 시 변경 가능. 모두 `PAPERSLICE_` prefix.
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `PAPERSLICE_DEFAULT_BACKEND` | `pipeline` | 요청에 `backend` 없을 때 쓸 값 |
+| `PAPERSLICE_DEFAULT_LANGUAGE` | `japan` | 요청에 `language` 없을 때 쓸 값 |
+| `PAPERSLICE_STRICT_GPU` | `false` | true면 GPU 백엔드 요청에 GPU 없으면 에러. false면 조용히 폴백. |
+| `PAPERSLICE_OUTPUT_ROOT` | `/app/output` | 컨테이너 내부의 영구 출력 경로. 보통 볼륨 마운트. |
+| `PAPERSLICE_SCRATCH_ROOT` | `/tmp/paperslice-scratch` | 요청별 임시 작업 디렉터리. 끝나면 삭제. |
+| `PAPERSLICE_MAX_UPLOAD_MB` | `100` | PDF 업로드 최대 크기. |
+| `PAPERSLICE_MINERU_TIMEOUT_SEC` | `1800` | MinerU 1회 실행 타임아웃 (초). 첫 실행 시 모델 다운로드가 있어서 길게 잡음. |
+| `PAPERSLICE_CORS_ALLOW_ORIGINS` | `["*"]` | CORS allowed origins. 운영 환경에서는 프론트 도메인으로 좁히세요. |
+| `PAPERSLICE_MINERU_BIN` | `mineru` | MinerU CLI 바이너리 경로. |
+
+예:
+```bash
+# 사용량이 적은 공유 서버에서 타임아웃 줄이고 업로드 제한 올리기
+docker run --rm -p 8000:8000 \
+  -e PAPERSLICE_MAX_UPLOAD_MB=200 \
+  -e PAPERSLICE_MINERU_TIMEOUT_SEC=600 \
+  -e PAPERSLICE_STRICT_GPU=true \
+  paperslice:latest
+```
 
 ---
 
