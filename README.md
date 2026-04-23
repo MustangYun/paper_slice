@@ -81,12 +81,23 @@ docker compose up --build
 ├── .gitattributes              # CRLF→LF 자동 정규화 (Windows 호환)
 ├── .dockerignore
 ├── src/paperslice/
+│   ├── __init__.py             # __version__
 │   ├── main.py                 # FastAPI 엔트리
 │   ├── pipeline.py             # [1/8] ~ [8/8] 파이프라인
 │   ├── pdf_type_detector.py    # 세로쓰기/스캔 자동 판별 (v8 신규)
 │   ├── mineru_runner.py        # MinerU CLI 호출
 │   ├── diff_builder.py         # ocr vs txt 비교
-│   └── schemas.py              # Pydantic 응답 모델
+│   ├── schemas.py              # Pydantic 응답 모델
+│   ├── config.py               # 환경변수 기반 설정 (PAPERSLICE_*)
+│   ├── block_enricher.py       # raw MinerU 블록 → EnrichedBlock 정규화
+│   ├── classifier.py           # 블록 역할(headline/body/ad/header) 분류
+│   ├── segmenter.py            # column 인식 + 기사 단위 묶기
+│   ├── asset_manager.py        # 이미지 영구 저장
+│   └── utils/
+│       ├── bbox.py             # bbox 연산 (IoU, union 등)
+│       ├── columns.py          # column 검출
+│       ├── location.py         # 페이지 내 좌표 → 사람용 라벨
+│       └── logging.py          # 로깅 셋업
 ├── tests/
 │   ├── test_pdf_type_detector.py
 │   └── test_diff_builder.py
@@ -96,11 +107,6 @@ docker compose up --build
 └── docker/
     └── entrypoint.sh
 ```
-
-> **Note**: 이 브랜치에는 `config.py`, `block_enricher.py`, `classifier.py`,
-> `segmenter.py`, `asset_manager.py`, `utils/logging.py` 등 v7부터 유지되는
-> 파일들은 포함되어 있지 않습니다 (업로드된 v8 zip이 델타만 포함). 풀 빌드가
-> 필요하면 해당 모듈들을 `src/paperslice/` 아래에 추가로 올려 주세요.
 
 ---
 
