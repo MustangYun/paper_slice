@@ -596,6 +596,29 @@ pytest -v
 
 > 대부분의 사용자는 **아무 것도 설정할 필요 없이** 컨테이너를 띄우면 자동으로 CPU 튜닝 + 페이지 청킹이 걸립니다. 이 섹션은 특정 사이즈 박스에서 더 안정적이거나 빠르게 돌리고 싶을 때 참고.
 
+### v9 가 실제로 돌고 있는지 확인하는 법
+
+> ⚠️ v8 이미지를 그대로 띄운 상태에서는 당연히 변화가 없습니다. **반드시 `docker compose build --no-cache` → `docker compose up -d`** 로 새 이미지를 빌드·재기동한 뒤 확인하세요.
+
+```bash
+# 1) /info 에 v9 전용 필드가 보이면 성공
+curl -s http://localhost:8000/info | python3 -m json.tool
+# 기대 출력 (발췌):
+#   "cpu_tuning": { "threads": 4, "source": "affinity", "raw_cpu_count": 4 },
+#   "mineru_config": {
+#     "device_mode": "cpu", "virtual_vram_gb": 1, "chunk_pages": 5, ...
+#   }
+
+# 2) 기동 로그에 CPU tuning 한 줄이 찍혀 있으면 성공
+docker compose logs paperslice | grep "CPU tuning"
+# → CPU tuning: threads=4 (source=cgroup_v2, cpu_count=16)
+
+# 3) /docs 상단 설명에 "### v9 변경 (CPU 최적화)" 블록이 보이면 성공
+open http://localhost:8000/docs   # macOS
+```
+
+세 가지 중 하나라도 안 보이면 이미지/컨테이너가 구버전입니다.
+
 ### 무엇이 자동으로 되나
 1. **스레드 캡** — FastAPI 기동 시 cgroup quota / `sched_getaffinity` / `cpu_count` 순으로 가용 CPU 를 탐지해 OMP/MKL/OpenBLAS/NUMEXPR/torch 스레드를 `[2, 8]` 로 클램프. 기동 로그에 1줄 찍힘:
    ```
