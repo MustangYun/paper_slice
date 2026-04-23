@@ -1,10 +1,37 @@
 # paperslice
 
-일본어 신문 PDF를 기사/광고/헤더 단위로 분리하는 FastAPI 서비스.
-Page-accurate provenance, 이미지 자산 보존 지원. MinerU(+PyMuPDF) 기반.
+**신문 PDF를 기사 단위로 잘라 구조화된 JSON으로 뽑아내는 파서.**
 
-이 저장소의 `claude/cross-platform-docker-fi22j` 브랜치는 원본 v8(Windows에서
-검증됨)을 **macOS / Linux에서도 동일하게 빌드·실행**할 수 있도록 정리한 판입니다.
+스캔된 종이 신문과 디지털 신문 PDF 모두를 입력으로 받아, 한 페이지 위에 겹쳐
+배치된 여러 기사·광고·헤더를 자동으로 분리합니다. 각 기사는 *어느 페이지의 어느
+영역에서 나왔는지*(page + bbox)까지 기록되어 있어, 후속 분석이나 원본 대조가
+그대로 가능합니다.
+
+내부적으로 [MinerU](https://github.com/opendatalab/MinerU)(pipeline / vlm / hybrid)
++ [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) + [PyMuPDF](https://pymupdf.readthedocs.io)
+를 오케스트레이션하며, FastAPI로 HTTP 인터페이스를 제공합니다.
+
+### 이런 문제를 풉니다
+- **한 페이지 = 여러 기사**인 신문을 기사 단위로 분리해야 할 때
+- 스캔본/디지털 PDF가 섞여 있어서 **파이프라인을 하나로 통일**해야 할 때
+- 세로쓰기 일본·중국 신문에서 MinerU `-m txt` 경로의 글자 누락 버그를 회피하고 싶을 때
+- 광고·헤더·목차를 본문과 **자동 구분**해서 기사 텍스트만 LLM에 넘기고 싶을 때
+- 추출된 이미지를 **영구 저장**하고 URL로 참조하고 싶을 때
+
+### 주요 기능
+- **다국어 OCR** — 한국어 / 일본어 / 중국어(간·번체) / 영어 등 PaddleOCR이 지원하는 언어 전부.
+- **세로쓰기 자동 감지 (v8)** — PyMuPDF로 PDF를 먼저 살펴 세로쓰기·스캔본이면 자동으로 OCR 경로로 분기.
+- **기사 단위 세그멘테이션** — column 검출 후 헤드라인-본문-이미지를 한 노드로 묶음.
+- **Provenance 보존** — 모든 텍스트 블록과 이미지에 원본 페이지 번호와 bbox가 그대로 붙음.
+- **이미지 자산 관리** — 추출된 이미지를 `output/<document_id>/images/` 에 영구 저장 + 다운로드 API.
+- **OCR vs 텍스트-레이어 diff** — `diff_report=true`로 두 방식을 돌려 품질 차이 검증.
+- **CPU / GPU 양쪽 지원** — `Dockerfile`(CPU, pipeline) / `Dockerfile.gpu`(CUDA, vlm/hybrid).
+- **Cross-platform Docker** — macOS / Linux / Windows에서 동일한 `docker compose up --build`.
+
+### 이 브랜치 (`claude/cross-platform-docker-fi22j`) 에서 한 것
+원본 v8은 Windows에서만 검증되어 있었습니다. 이 브랜치는 소스 변경 없이 빌드·실행·
+문서를 손봐 **macOS / Linux / Windows 동일 명령어로 돌아가게** 만든 판입니다
+(`.gitattributes` 라인엔딩 정규화, bash/PowerShell 스크립트 페어, Apple Silicon 자동 `--platform=linux/amd64`, 상대경로 `docker-compose.yml` 등).
 
 ---
 

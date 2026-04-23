@@ -37,15 +37,20 @@ app = FastAPI(
     title="paperslice",
     version=__version__,
     description=(
-        "**일본어 신문 PDF → 구조화된 기사 JSON** 파서.\n\n"
-        "스캔된 신문 페이지를 **기사 / 광고 / 헤더** 단위로 분리해주고, "
-        "page-accurate provenance(페이지 번호 + bbox)와 이미지 자산을 "
-        "함께 보존합니다. 내부적으로 **MinerU + PyMuPDF**를 사용하며, "
-        "세로쓰기 PDF는 자동으로 OCR로 분기됩니다.\n\n"
+        "**신문 PDF를 기사 단위로 잘라 구조화된 JSON으로 뽑아내는 파서.**\n\n"
+        "스캔된 종이 신문과 디지털 신문 PDF 모두를 입력으로 받아, 한 페이지에 "
+        "겹쳐 배치된 여러 기사·광고·헤더를 자동으로 분리합니다. 각 기사에는 "
+        "*어느 페이지의 어느 영역(bbox)에서 나왔는지* provenance가 붙어 있어 "
+        "후속 분석과 원본 대조가 그대로 가능합니다.\n\n"
+        "내부적으로 **MinerU**(pipeline / vlm / hybrid 백엔드) + "
+        "**PaddleOCR** + **PyMuPDF**를 오케스트레이션합니다.\n\n"
+        "### 지원 언어\n"
+        "한국어 / 일본어 / 중국어(간·번체) / 영어 등 PaddleOCR이 지원하는 언어 전부. "
+        "세로쓰기 일본·중국 신문은 PyMuPDF가 먼저 PDF를 살펴 자동으로 OCR 경로로 분기합니다.\n\n"
         "### 사용 순서\n"
         "1. `POST /parse` 에 PDF 업로드 → `ParseResponse` 수신.\n"
         "2. `assets_dir` 경로에서 추출된 이미지를 가져옴.\n"
-        "3. 디버깅이 필요하면 `GET /documents/{id}/pages/{n}/blocks`.\n"
+        "3. 결과가 의심스러우면 `GET /documents/{id}/pages/{n}/blocks` 로 원본 블록 확인.\n"
     ),
     openapi_tags=[
         {"name": "core", "description": "주요 파싱 API."},
