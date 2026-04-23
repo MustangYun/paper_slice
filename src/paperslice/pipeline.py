@@ -19,12 +19,19 @@ from .asset_manager import persist_images
 from .block_enricher import enrich_blocks
 from .classifier import classify_blocks
 from .config import MineruBackend, settings
+from .cpu_tuning import detect_cpu_tuning
 from .diff_builder import build_diff_report
 from .mineru_runner import (
     MineruError,
     MineruResult,
     get_mineru_version,
     run_mineru,
+)
+from .pdf_chunker import (
+    PdfChunk,
+    get_page_count,
+    merge_content_lists,
+    split_pdf_into_chunks,
 )
 from .pdf_type_detector import detect_mineru_method
 from .schemas import (
@@ -40,6 +47,102 @@ logger = logging.getLogger(__name__)
 
 # 전체 단계 수. [n/8] 포맷에 쓰임.
 _TOTAL_STEPS = 8
+
+
+def _run_mineru_maybe_chunked(
+    pdf_path: Path,
+    mineru_out: Path,
+    scratch_dir: Path,
+    backend: MineruBackend,
+    language: str,
+    method: str,
+    chunk_label: str,
+) -> tuple[MineruResult, int]:
+    """큰 PDF 는 페이지 단위로 쪼개 MinerU 를 여러 번 호출하고 결과를 병합.
+
+    페이지 수가 `settings.chunk_threshold_pages` 이하이거나 `chunk_pages=0`
+    이면 기존처럼 1회만 호출. chunk_label 은 로그용 ('primary'/'secondary').
+
+    반환: (병합된 MineruResult, 실행된 chunk 개수).
+    """
+    mineru_out.mkdir(parents=True, exist_ok=True)
+    chunk_size = settings.chunk_pages
+    threshold = settings.chunk_threshold_pages
+
+    total_pages = get_page_count(pdf_path)
+    should_chunk = (
+        chunk_size > 0
+        and total_pages > threshold
+        and total_pages > chunk_size
+    )
+
+    if not should_chunk:
+        result = run_mineru(
+            pdf_path=pdf_path,
+            output_dir=mineru_out,
+            backend=backend,
+            language=language,
+            method=method,
+        )
+        return result, 1
+
+    chunks = split_pdf_into_chunks(pdf_path, scratch_dir, chunk_size)
+    if len(chunks) <= 1:
+        # 분할이 실제로 일어나지 않은 edge case — 일반 경로로 폴백.
+        result = run_mineru(
+            pdf_path=pdf_path,
+            output_dir=mineru_out,
+            backend=backend,
+            language=language,
+            method=method,
+        )
+        return result, 1
+
+    per_chunk: list[tuple[PdfChunk, list[dict], Path]] = []
+    first_backend: MineruBackend | None = None
+    first_method_used = ""
+    for chunk in chunks:
+        chunk_out = mineru_out / f"chunk{chunk.index:03d}"
+        t_chunk = time.perf_counter()
+        logger.info(
+            "MinerU chunk %s %d/%d: pages %d-%d (%d pages)",
+            chunk_label,
+            chunk.index + 1,
+            len(chunks),
+            chunk.start_page + 1,
+            chunk.end_page,
+            chunk.page_count,
+        )
+        result = run_mineru(
+            pdf_path=chunk.path,
+            output_dir=chunk_out,
+            backend=backend,
+            language=language,
+            method=method,
+        )
+        logger.info(
+            "MinerU chunk %s %d/%d 완료: blocks=%d [%s]",
+            chunk_label,
+            chunk.index + 1,
+            len(chunks),
+            len(result.content_list),
+            _fmt_dur(time.perf_counter() - t_chunk),
+        )
+        if first_backend is None:
+            first_backend = result.backend_used
+            first_method_used = result.method_used
+        per_chunk.append((chunk, result.content_list, result.raw_output_dir))
+
+    merged = merge_chunk_outputs(per_chunk, mineru_out / "merged")
+    return (
+        MineruResult(
+            content_list=merged.content_list,
+            raw_output_dir=merged.raw_output_dir,
+            backend_used=first_backend or backend,
+            method_used=first_method_used,
+        ),
+        len(chunks),
+    )
 
 
 def _now_iso() -> str:
@@ -155,13 +258,27 @@ def parse_pdf(
         # ================================================================
         t_step = time.perf_counter()
         mineru_out = scratch_dir / "mineru-out"
+        # CPU 튜닝 요약 1줄 — 운영 중 OOM 원인 추적용.
+        _tune = detect_cpu_tuning()
+        logger.info(
+            "[2/8] MinerU 시작 → threads=%d (source=%s), vram_gb=%d, "
+            "device=%s, formula=%s, chunk_pages=%d",
+            _tune.threads,
+            _tune.source,
+            settings.mineru_virtual_vram_gb,
+            settings.mineru_device_mode,
+            settings.mineru_formula_enable,
+            settings.chunk_pages,
+        )
         try:
-            result = run_mineru(
+            result, primary_chunks = _run_mineru_maybe_chunked(
                 pdf_path=pdf_path,
-                output_dir=mineru_out,
+                mineru_out=mineru_out,
+                scratch_dir=scratch_dir,
                 backend=backend,
                 language=language,
                 method=primary_method,
+                chunk_label="primary",
             )
         except MineruError as e:
             logger.error("MinerU failed (primary): %s\nstderr: %s", e, e.stderr[:2000])
@@ -177,12 +294,13 @@ def parse_pdf(
             if result.backend_used == backend
             else f"{result.backend_used.value} (요청:{backend.value})"
         )
+        chunk_note = f", chunks={primary_chunks}" if primary_chunks > 1 else ""
         _log_step(
             2,
             "MinerU 실행",
             (
                 f"method={primary_method}, backend={backend_note}, "
-                f"content_list={len(result.content_list)} blocks "
+                f"content_list={len(result.content_list)} blocks{chunk_note} "
                 f"[{_fmt_dur(time.perf_counter() - t_step)}]"
             ),
         )
@@ -209,12 +327,14 @@ def parse_pdf(
             secondary_method = "txt" if primary_method == "ocr" else "ocr"
             secondary_out = scratch_dir / "mineru-out-diff"
             try:
-                secondary = run_mineru(
+                secondary, _secondary_chunks = _run_mineru_maybe_chunked(
                     pdf_path=pdf_path,
-                    output_dir=secondary_out,
+                    mineru_out=secondary_out,
+                    scratch_dir=scratch_dir,
                     backend=backend,
                     language=language,
                     method=secondary_method,
+                    chunk_label="secondary",
                 )
                 if primary_method == "ocr":
                     ocr_cl, txt_cl = result.content_list, secondary.content_list

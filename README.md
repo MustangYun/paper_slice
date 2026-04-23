@@ -21,6 +21,9 @@
 ### 주요 기능
 - **다국어 OCR** — 한국어 / 일본어 / 중국어(간·번체) / 영어 등 PaddleOCR이 지원하는 언어 전부.
 - **세로쓰기 자동 감지 (v8)** — PyMuPDF로 PDF를 먼저 살펴 세로쓰기·스캔본이면 자동으로 OCR 경로로 분기.
+- **CPU 자동 튜닝 (v9)** — 컨테이너 기동 시 cgroup / CPU affinity 를 탐지해 OMP/MKL/OpenBLAS/torch 스레드를 [2, 8] 로 자동 캡. vCPU 폭주로 인한 메모리 터짐 방지.
+- **페이지 단위 청킹 (v9)** — 큰 PDF(기본 10페이지 초과)를 5페이지 단위로 쪼개 MinerU 를 여러 번 호출. 한 호출의 피크 메모리가 chunk 크기에 비례해 내려가 **CPU-only 8GB 박스에서도 119페이지 PDF 완주** 가능.
+- **OOM 자동 재시도 (v9)** — MinerU stderr 에서 `OutOfMemoryError` / `Killed` / `RemoteDisconnected` / `ConnectionReset` 등이 감지되면 `MINERU_VIRTUAL_VRAM_SIZE` 를 반감해 재시도.
 - **기사 단위 세그멘테이션** — column 검출 후 헤드라인-본문-이미지를 한 노드로 묶음.
 - **Provenance 보존** — 모든 텍스트 블록과 이미지에 원본 페이지 번호와 bbox가 그대로 붙음.
 - **이미지 자산 관리** — 추출된 이미지를 `output/<document_id>/images/` 에 영구 저장 + 다운로드 API.
@@ -184,6 +187,8 @@ MinerU가 그대로 PaddleOCR에 전달하는 언어 코드.
 
 컨테이너 기동 시 변경 가능. 모두 `PAPERSLICE_` prefix.
 
+#### 기본
+
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | `PAPERSLICE_DEFAULT_BACKEND` | `pipeline` | 요청에 `backend` 없을 때 쓸 값 |
@@ -196,6 +201,25 @@ MinerU가 그대로 PaddleOCR에 전달하는 언어 코드.
 | `PAPERSLICE_CORS_ALLOW_ORIGINS` | `["*"]` | CORS allowed origins. 운영 환경에서는 프론트 도메인으로 좁히세요. |
 | `PAPERSLICE_MINERU_BIN` | `mineru` | MinerU CLI 바이너리 경로. |
 
+#### CPU 튜닝 (v9 신규)
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `PAPERSLICE_CPU_THREADS` | *auto* | OMP/MKL/OpenBLAS/NUMEXPR/torch 스레드 상한. 미지정 시 cgroup → sched_getaffinity → cpu_count 순으로 탐지, `[2, 8]` 로 클램프. |
+| `PAPERSLICE_CHUNK_PAGES` | `5` | MinerU 1회 호출당 페이지 수. 낮출수록 피크 메모리 ↓, 서브프로세스 오버헤드 ↑. `0` 으로 주면 청킹 비활성화(과거 동작). |
+| `PAPERSLICE_CHUNK_THRESHOLD_PAGES` | `10` | 이 페이지 수를 **초과** 할 때만 청킹을 적용. 짧은 PDF 는 분할 오버헤드 회피. |
+
+#### MinerU 튜닝 (v9 신규)
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `PAPERSLICE_MINERU_DEVICE_MODE` | `cpu` | `MINERU_DEVICE_MODE` 로 전달. CPU 경로 강제. |
+| `PAPERSLICE_MINERU_VIRTUAL_VRAM_GB` | `1` | `MINERU_VIRTUAL_VRAM_SIZE` 로 전달. MinerU 내부 `window_size` / 배치 비율을 결정. 8GB RAM 박스 기준 `1` 이 안전, 16GB+ 이면 `2` 까지. |
+| `PAPERSLICE_MINERU_MODEL_SOURCE` | `modelscope` | `MINERU_MODEL_SOURCE`. `modelscope` / `huggingface`. 리전별 속도 차이. |
+| `PAPERSLICE_MINERU_FORMULA_ENABLE` | `false` | `MINERU_FORMULA_ENABLE`. 수식 검출은 CPU에서 가장 비싼 feature — 기본 off. |
+| `PAPERSLICE_MINERU_TABLE_ENABLE` | `true` | `MINERU_TABLE_ENABLE`. |
+| `PAPERSLICE_MINERU_RETRY_ON_OOM` | `1` | OOM/연결 리셋 stderr 감지 시 재시도 횟수. 매 재시도마다 `virtual_vram_gb` 를 반감(최소 1). |
+
 예:
 ```bash
 # 사용량이 적은 공유 서버에서 타임아웃 줄이고 업로드 제한 올리기
@@ -203,6 +227,23 @@ docker run --rm -p 8000:8000 \
   -e PAPERSLICE_MAX_UPLOAD_MB=200 \
   -e PAPERSLICE_MINERU_TIMEOUT_SEC=600 \
   -e PAPERSLICE_STRICT_GPU=true \
+  paperslice:latest
+
+# 16GB RAM / 8 vCPU 박스에서 throughput 올리기 (v9)
+docker run --rm -p 8000:8000 \
+  --cpus=8 --memory=16g \
+  -e PAPERSLICE_CPU_THREADS=6 \
+  -e PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=2 \
+  -e PAPERSLICE_CHUNK_PAGES=10 \
+  paperslice:latest
+
+# 4GB 초저메모리 박스에서 안정화 — chunk 더 작게, vram 더 낮게
+docker run --rm -p 8000:8000 \
+  --cpus=2 --memory=4g \
+  -e PAPERSLICE_CPU_THREADS=2 \
+  -e PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=1 \
+  -e PAPERSLICE_CHUNK_PAGES=3 \
+  -e PAPERSLICE_MINERU_FORMULA_ENABLE=false \
   paperslice:latest
 ```
 
@@ -219,10 +260,12 @@ docker run --rm -p 8000:8000 \
 ├── .dockerignore
 ├── src/paperslice/
 │   ├── __init__.py             # __version__
-│   ├── main.py                 # FastAPI 엔트리
-│   ├── pipeline.py             # [1/8] ~ [8/8] 파이프라인
-│   ├── pdf_type_detector.py    # 세로쓰기/스캔 자동 판별 (v8 신규)
-│   ├── mineru_runner.py        # MinerU CLI 호출
+│   ├── main.py                 # FastAPI 엔트리 (v9: 기동 시 CPU 스레드 캡 적용)
+│   ├── pipeline.py             # [1/8] ~ [8/8] 파이프라인 (v9: 페이지 청킹 + 병합)
+│   ├── pdf_type_detector.py    # 세로쓰기/스캔 자동 판별 (v8)
+│   ├── mineru_runner.py        # MinerU CLI 호출 (v9: env 주입 + OOM 재시도)
+│   ├── cpu_tuning.py           # CPU 코어 자동 탐지 + MinerU env 조립 (v9 신규)
+│   ├── pdf_chunker.py          # PDF 페이지 단위 분할 + 결과 병합 (v9 신규)
 │   ├── diff_builder.py         # ocr vs txt 비교
 │   ├── schemas.py              # Pydantic 응답 모델
 │   ├── config.py               # 환경변수 기반 설정 (PAPERSLICE_*)
@@ -237,7 +280,9 @@ docker run --rm -p 8000:8000 \
 │       └── logging.py          # 로깅 셋업
 ├── tests/
 │   ├── test_pdf_type_detector.py
-│   └── test_diff_builder.py
+│   ├── test_diff_builder.py
+│   ├── test_cpu_tuning.py      # v9 신규 (CPU 탐지/env 조립/OOM 마커)
+│   └── test_pdf_chunker.py     # v9 신규 (분할/오프셋/이미지 병합)
 ├── scripts/
 │   ├── build.sh / build.ps1
 │   └── run_local.sh / run_local.ps1
@@ -547,7 +592,109 @@ pytest -v
 
 ---
 
+## CPU 전용 운영 가이드 (v9)
+
+> 대부분의 사용자는 **아무 것도 설정할 필요 없이** 컨테이너를 띄우면 자동으로 CPU 튜닝 + 페이지 청킹이 걸립니다. 이 섹션은 특정 사이즈 박스에서 더 안정적이거나 빠르게 돌리고 싶을 때 참고.
+
+### v9 가 실제로 돌고 있는지 확인하는 법
+
+> ⚠️ v8 이미지를 그대로 띄운 상태에서는 당연히 변화가 없습니다. **반드시 `docker compose build --no-cache` → `docker compose up -d`** 로 새 이미지를 빌드·재기동한 뒤 확인하세요.
+
+```bash
+# 1) /info 에 v9 전용 필드가 보이면 성공
+curl -s http://localhost:8000/info | python3 -m json.tool
+# 기대 출력 (발췌):
+#   "cpu_tuning": { "threads": 4, "source": "affinity", "raw_cpu_count": 4 },
+#   "mineru_config": {
+#     "device_mode": "cpu", "virtual_vram_gb": 1, "chunk_pages": 5, ...
+#   }
+
+# 2) 기동 로그에 CPU tuning 한 줄이 찍혀 있으면 성공
+docker compose logs paperslice | grep "CPU tuning"
+# → CPU tuning: threads=4 (source=cgroup_v2, cpu_count=16)
+
+# 3) /docs 상단 설명에 "### v9 변경 (CPU 최적화)" 블록이 보이면 성공
+open http://localhost:8000/docs   # macOS
+```
+
+세 가지 중 하나라도 안 보이면 이미지/컨테이너가 구버전입니다.
+
+### 무엇이 자동으로 되나
+1. **스레드 캡** — FastAPI 기동 시 cgroup quota / `sched_getaffinity` / `cpu_count` 순으로 가용 CPU 를 탐지해 OMP/MKL/OpenBLAS/NUMEXPR/torch 스레드를 `[2, 8]` 로 클램프. 기동 로그에 1줄 찍힘:
+   ```
+   CPU tuning: threads=4 (source=cgroup_v2, cpu_count=16)
+   ```
+2. **페이지 청킹** — PDF 가 `PAPERSLICE_CHUNK_THRESHOLD_PAGES` (기본 10) 를 초과하면 `PAPERSLICE_CHUNK_PAGES` (기본 5) 단위로 쪼개 MinerU 를 여러 번 호출. 병합 시 `page_idx` 오프셋과 이미지 경로 재작성은 자동. 청킹 진행은 `[2/8]` 단계 로그에 찍힘:
+   ```
+   [2/8] MinerU 시작 → threads=4 (source=cgroup_v2), vram_gb=1, device=cpu, formula=False, chunk_pages=5
+   MinerU chunk primary 1/24: pages 1-5 (5 pages)
+   MinerU attempt 1/2: threads=4 vram_gb=1 device=cpu
+   MinerU chunk primary 1/24 완료: blocks=47 [12.3s]
+   ...
+   chunk 결과 병합: chunks=24, blocks=1234, images_copied=38
+   ```
+3. **MinerU CPU env 주입** — `MINERU_DEVICE_MODE=cpu`, `MINERU_VIRTUAL_VRAM_SIZE=1`, `MINERU_FORMULA_ENABLE=false` 등을 subprocess 에 `env=` 로 주입. 운영자가 `os.environ` 을 건드릴 필요 없음.
+4. **OOM 자동 재시도** — MinerU stderr 에 `OutOfMemoryError` / `Killed` / `signal 9` / `RemoteDisconnected` / `ConnectionReset` / `Cannot allocate memory` 등이 보이면 `vram_gb` 를 반감(최소 1)해 재시도. 재시도 횟수는 `PAPERSLICE_MINERU_RETRY_ON_OOM` (기본 1).
+
+### 박스 사이즈별 권장값
+
+| 박스 사양 | `CHUNK_PAGES` | `MINERU_VIRTUAL_VRAM_GB` | `CPU_THREADS` | 비고 |
+|---|---|---|---|---|
+| 4 vCPU / 4 GB | 3 | 1 | 2 | 극소형. formula/table off 권장. |
+| **4 vCPU / 8 GB** | **5** *(기본)* | **1** *(기본)* | **auto** *(=4)* | **권장 기본 스펙.** 119 페이지 ≤ 8 분. |
+| 8 vCPU / 16 GB | 10 | 2 | 6 | throughput 중심. chunk 크게 해도 OK. |
+| 16+ vCPU / 32+ GB | 15 | 4 | 8 | 대량 배치. OS 파일 핸들 상한도 체크. |
+
+### 모델 프리베이크
+`Dockerfile` 이 빌드 중 `mineru-models-download` 으로 pipeline 모델을 `/home/paperslice/.cache/` 에 미리 받아둡니다. 네트워크 단절 환경에서 빌드한 경우에만 런타임 첫 요청 시 다운로드로 폴백 — 그때는 `PAPERSLICE_MINERU_TIMEOUT_SEC` 를 넉넉히(기본 1800초) 유지하세요.
+
+### CPU 모드 처리 순서 (요약)
+```
+요청 도착
+  ↓
+[1/8] PyMuPDF 로 PDF 타입 감지 (ocr / txt)
+  ↓
+[2/8] 페이지 수 > 10 ?  ── No → MinerU 1회 호출
+         │ Yes
+         ↓
+       5페이지씩 서브 PDF 생성 (scratch/chunks/)
+         ↓
+       각 서브 PDF 에 MinerU 순차 실행
+         ├─ env: OMP/MKL/...=auto, MINERU_DEVICE_MODE=cpu, VIRTUAL_VRAM=1
+         └─ 실패 시 vram_gb //= 2 재시도
+         ↓
+       content_list 병합 (page_idx 오프셋, 이미지 unique prefix 복사)
+  ↓
+[3/8] diff 요청 있으면 secondary 도 동일 청킹 흐름
+  ↓
+[4/8]~[8/8] 블록 enrich → 이미지 저장 → 분류 → 세그먼트 → 응답 조립
+```
+
+---
+
+## 문제 해결 (OOM / 느린 파싱)
+
+| 증상 | 원인 | 해결 |
+|---|---|---|
+| `MinerU exited with code 1` + `RemoteDisconnected` / `ConnectionReset` | MinerU API 서브프로세스가 OOM killer 에게 죽음 | `PAPERSLICE_CHUNK_PAGES` 낮추기 (5 → 3), `PAPERSLICE_MINERU_VIRTUAL_VRAM_GB=1` 유지, `--memory` 제한 올리기 |
+| 로그에 `CPU tuning: threads=1` | cgroup 이 vCPU 1개만 할당 | `docker run --cpus=N` 값을 올리거나 K8s `resources.requests.cpu` 상향 |
+| 첫 요청이 수 분간 안 끝남 | 모델 프리베이크 실패 → 런타임에 다운로드 중 | 빌드 로그 `WARNING: MinerU 모델 프리베이크 실패` 확인. 네트워크 복구 후 `docker compose build --no-cache` |
+| 119 페이지 PDF 가 10 분 넘게 걸림 | chunk 당 MinerU 콜드 시작 오버헤드 | `PAPERSLICE_CHUNK_PAGES` 를 10 으로 올려 서브프로세스 기동 횟수 절반으로 |
+| `Killed` 만 stderr 에 찍히고 컨테이너가 OOM | 호스트 메모리 부족 (chunk 크기보다 small) | `--memory` 를 8g 이상 주거나, `PAPERSLICE_MINERU_FORMULA_ENABLE=false` 유지 확인 |
+| 스레드 수가 예상보다 많음 | 운영자가 override env 로 큰 값을 줌 | `docker exec <ctr> env \| grep NUM_THREADS` 로 확인. 비었으면 `cpu_tuning` 의 `setdefault` 가 반영한 값 |
+
+디버깅에 도움이 되는 엔드포인트:
+```bash
+curl -s http://localhost:8000/info
+# → {"gpu_available": false, ...}
+
+docker compose logs paperslice 2>&1 | grep -E "CPU tuning|MinerU attempt|chunk"
+```
+
+---
+
 ## 배포 가이드
 
-v7 → v8 업그레이드 절차는 [`DEPLOY_v8.md`](./DEPLOY_v8.md) 참고. Windows(PowerShell)과
-macOS/Linux(bash) 양쪽 절차를 병기.
+- **v8 → v9 업그레이드**: [`DEPLOY_v9.md`](./DEPLOY_v9.md) — CPU 자동 튜닝 + 페이지 청킹 도입.
+- **v7 → v8 업그레이드**: [`DEPLOY_v8.md`](./DEPLOY_v8.md) — 세로쓰기 감지 + `[n/8]` 단계 로그 도입.
+두 문서 모두 Windows(PowerShell)와 macOS/Linux(bash) 절차를 병기합니다.

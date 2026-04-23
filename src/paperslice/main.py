@@ -25,12 +25,16 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import __version__
 from .config import MineruBackend, settings
+from .cpu_tuning import apply_in_process_thread_caps, detect_cpu_tuning
 from .mineru_runner import MineruError, _gpu_available, get_mineru_version
 from .pipeline import parse_pdf
 from .schemas import ParseMode, ParseResponse
 from .utils.logging import setup_logging
 
 setup_logging()
+# torch 가 처음 import 되기 전에 스레드 캡을 걸어야 OMP/MKL 이 적은 스레드로
+# 올라온다. _gpu_available() 에서 torch 를 import 하므로 그 전에 호출.
+apply_in_process_thread_caps()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -44,6 +48,14 @@ app = FastAPI(
         "후속 분석과 원본 대조가 그대로 가능합니다.\n\n"
         "내부적으로 **MinerU**(pipeline / vlm / hybrid 백엔드) + "
         "**PaddleOCR** + **PyMuPDF**를 오케스트레이션합니다.\n\n"
+        "### v9 변경 (CPU 최적화)\n"
+        "- **CPU 코어 자동 탐지** — cgroup / affinity 로 가용 vCPU 를 찾아 "
+        "OMP/MKL/torch 스레드를 `[2, 8]` 로 자동 캡. 스레드 폭주로 인한 OOM 방지.\n"
+        "- **페이지 단위 청킹** — PDF 가 10페이지 초과면 5페이지씩 잘라 MinerU 를 "
+        "순차 호출. 병합은 자동. 8GB RAM 박스에서도 119페이지 PDF 완주.\n"
+        "- **OOM 자동 재시도** — MinerU stderr 에 OOM/연결 리셋 시그니처가 보이면 "
+        "`MINERU_VIRTUAL_VRAM_SIZE` 를 반감해 재시도.\n"
+        "- 현재 적용된 튜닝 값은 `GET /info` 의 `cpu_tuning` / `mineru_config` 로 확인.\n\n"
         "### 지원 언어\n"
         "한국어 / 일본어 / 중국어(간·번체) / 영어 등 PaddleOCR이 지원하는 언어 전부. "
         "세로쓰기 일본·중국 신문은 PyMuPDF가 먼저 PDF를 살펴 자동으로 OCR 경로로 분기합니다.\n\n"
@@ -91,7 +103,13 @@ async def info() -> dict[str, object]:
     - `strict_gpu` — true일 때 GPU 백엔드 요청에서 CUDA가 없으면 에러.
       false면 조용히 `pipeline`으로 폴백.
     - `output_root` — 파싱 결과물이 영구 저장되는 컨테이너 내부 경로.
+    - `cpu_tuning` *(v9)* — 이 프로세스에 적용된 CPU 스레드 캡과 탐지 출처.
+      `threads` 가 예상값(4~8)이 아니면 cgroup/affinity 설정 문제.
+    - `mineru_config` *(v9)* — MinerU 서브프로세스에 주입되는 env 의 요약.
+      OOM 발생 시 운영자가 여기서 현재 `virtual_vram_gb` / `chunk_pages` 를
+      바로 확인할 수 있음.
     """
+    tuning = detect_cpu_tuning()
     return {
         "paperslice_version": __version__,
         "mineru_version": get_mineru_version(),
@@ -99,6 +117,21 @@ async def info() -> dict[str, object]:
         "gpu_available": _gpu_available(),
         "strict_gpu": settings.strict_gpu,
         "output_root": str(settings.output_root),
+        "cpu_tuning": {
+            "threads": tuning.threads,
+            "source": tuning.source,
+            "raw_cpu_count": tuning.raw_cpu_count,
+        },
+        "mineru_config": {
+            "device_mode": settings.mineru_device_mode,
+            "virtual_vram_gb": settings.mineru_virtual_vram_gb,
+            "model_source": settings.mineru_model_source,
+            "formula_enable": settings.mineru_formula_enable,
+            "table_enable": settings.mineru_table_enable,
+            "retry_on_oom": settings.mineru_retry_on_oom,
+            "chunk_pages": settings.chunk_pages,
+            "chunk_threshold_pages": settings.chunk_threshold_pages,
+        },
     }
 
 
