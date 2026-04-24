@@ -33,30 +33,67 @@ GPU_BACKENDS: set[MineruBackend] = {MineruBackend.vlm, MineruBackend.hybrid}
 # Methods accepted by the pipeline backend's -m flag.
 _VALID_METHODS = {"auto", "ocr", "txt"}
 
-# MinerU 서브프로세스가 OOM 으로 kill 될 때 stderr 에 남는 시그니처들.
-# urllib3 의 RemoteDisconnected / ConnectionResetError 는 mineru-api 워커가
-# 메모리 부족으로 죽었을 때 CLI 쪽에서 관측되는 증상.
+# MinerU 서브프로세스가 실제 OOM 으로 kill 될 때의 stderr 시그니처.
+# "remotedisconnected" / "connection reset" 같은 urllib3 에러는 여기서 제외했다 —
+# 이전 버전은 "워커가 OOM 으로 죽었을 때 CLI 쪽 증상"으로 가정하고 이것도 OOM 으로
+# 처리했지만, 실제 버그 리포트(이슈 #3, #4, #7, #10)는 모두 huggingface.co /
+# modelscope.cn 으로의 HTTPS 연결 실패였고 vram 반감 재시도로는 풀리지 않았다.
+# 네트워크 실패는 _NETWORK_MARKERS 로 분리해 즉시 명확한 에러를 띄운다.
 _OOM_MARKERS: tuple[str, ...] = (
     "outofmemoryerror",
     "memoryerror",
     "killed",
     "signal 9",
     "sigkill",
-    "remotedisconnected",
-    "connectionreseterror",
-    "connection aborted",
-    "connection reset",
     "worker was killed",
     "cannot allocate memory",
 )
 
+# 모델 다운로드 실패 시그니처. 이게 감지되면 vram 반감 재시도로 해결 불가 —
+# prebake 가 실패했거나 런타임 네트워크가 hub 에 닿지 못하는 상황. 즉시 명확한
+# 에러 메시지로 사용자에게 원인과 해결책을 제시한다.
+_NETWORK_MARKERS: tuple[str, ...] = (
+    "huggingface.co",
+    "modelscope.cn",
+    "hf-mirror.com",
+    "max retries exceeded",
+    "name resolution",
+    "temporary failure in name resolution",
+    "nodename nor servname",
+    "getaddrinfo failed",
+    "certificate verify failed",
+    "ssl: certificate_verify_failed",
+    "hfhubhttperror",
+    "localentrynotfounderror",
+    "offlinemodeiserror",
+)
+
 
 def _looks_like_oom(stderr: str) -> bool:
-    """stderr 에 OOM / 워커 사망 시그니처가 포함됐는지."""
+    """stderr 에 실제 OOM 시그니처가 포함됐는지."""
     if not stderr:
         return False
     lowered = stderr.lower()
     return any(marker in lowered for marker in _OOM_MARKERS)
+
+
+def _looks_like_network_failure(stderr: str) -> bool:
+    """stderr 에 모델 hub 접근 실패 시그니처가 포함됐는지."""
+    if not stderr:
+        return False
+    lowered = stderr.lower()
+    return any(marker in lowered for marker in _NETWORK_MARKERS)
+
+
+_NETWORK_FAILURE_HINT = (
+    "MinerU 가 모델 hub (huggingface.co / modelscope.cn) 에 접근하지 못해 실패했습니다. "
+    "원인과 해결 순서: "
+    "(1) 이미지에 모델이 프리베이크되지 않음 → BUILD_OFFLINE_TOLERANT=0 으로 재빌드. "
+    "(2) 사내망에서 HTTPS intercept → --build-arg WITH_CORP_CA=1 로 재빌드. "
+    "(3) 오프라인에서 런타임 다운로드 의도라면 docker run -e HF_HUB_OFFLINE=0 "
+    "-e TRANSFORMERS_OFFLINE=0 으로 offline 모드 해제. "
+    "(4) 그래도 실패하면 MINERU_MODEL_SOURCE 를 huggingface → modelscope 로 전환 시도."
+)
 
 
 class MineruError(RuntimeError):
@@ -189,6 +226,21 @@ def run_mineru(
                 stdout=e.stdout or "",
                 stderr=e.stderr or "",
             )
+            # 네트워크 실패는 vram 반감으로 안 풀린다 — 즉시 명확한 에러로 전환.
+            # 이렇게 분리하기 전에는 "remotedisconnected" 같은 urllib3 에러가
+            # OOM 로 오인되어 무의미한 재시도를 돌았다 (이슈 #3, #4, #7, #10).
+            if _looks_like_network_failure(err.stderr):
+                logger.error(
+                    "MinerU attempt %d failed with network error (hub 접근 실패). "
+                    "stderr tail: %s",
+                    attempt,
+                    (err.stderr or "")[-400:],
+                )
+                raise MineruError(
+                    f"MinerU exited with code {e.returncode}: {_NETWORK_FAILURE_HINT}",
+                    stdout=err.stdout,
+                    stderr=err.stderr,
+                ) from e
             if attempt < attempts and _looks_like_oom(err.stderr):
                 next_vram = max(1, vram_gb // 2)
                 logger.warning(

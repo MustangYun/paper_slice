@@ -72,8 +72,10 @@ def test_oom_marker_detection():
 
     assert _looks_like_oom("torch.cuda.OutOfMemoryError: ...")
     assert _looks_like_oom("Killed\n")
-    assert _looks_like_oom("urllib3.exceptions.RemoteDisconnected: Remote end closed")
-    assert _looks_like_oom("ConnectionResetError: [Errno 104] Connection reset by peer")
+    # 네트워크 오류는 OOM 에서 분리됨 (이슈 #3, #4, #7, #10). 네트워크 분류 자체는
+    # test_mineru_error_classification.py 에서 별도 검증.
+    assert not _looks_like_oom("urllib3.exceptions.RemoteDisconnected: Remote end closed")
+    assert not _looks_like_oom("ConnectionResetError: [Errno 104] Connection reset by peer")
     assert _looks_like_oom("Worker was killed while processing request")
     assert _looks_like_oom("Cannot allocate memory")
     assert not _looks_like_oom("")
