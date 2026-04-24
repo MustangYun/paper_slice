@@ -34,7 +34,11 @@ class BlockRole(str, Enum):
     ad_text = "ad_text"  # text block that is part of an advertisement
     page_header = "page_header"  # masthead, folio, page number
     page_footer = "page_footer"  # copyright line, etc.
-    index = "index"  # table-of-contents / "what's on other pages" listing
+    # value "index" 로 유지하여 직렬화/API 호환성 보존. python 이름을
+    # `toc_index` 로 바꾼 이유: BlockRole 은 str 상속이라 `index` 가 str.index
+    # 메서드를 shadowing 함. `role.index("x")` 호출 시 method 가 아닌 enum
+    # member 가 반환돼 AttributeError 소지.
+    toc_index = "index"  # table-of-contents / "what's on other pages" listing
     image = "image"
     table = "table"
     unknown = "unknown"
@@ -201,7 +205,7 @@ def classify_block(block: EnrichedBlock) -> ClassifiedBlock:
     # heuristic's phone-number regex).
     is_index, index_conf = _looks_like_index(text)
     if is_index:
-        return ClassifiedBlock(block, BlockRole.index, confidence=index_conf)
+        return ClassifiedBlock(block, BlockRole.toc_index, confidence=index_conf)
 
     # Ad-like text
     is_ad, ad_conf = _looks_like_ad(text)
