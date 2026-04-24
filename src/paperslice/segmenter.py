@@ -34,7 +34,7 @@ Future improvements (left as hooks):
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .block_enricher import EnrichedBlock
 from .classifier import BlockRole, ClassifiedBlock
@@ -64,21 +64,22 @@ _KIND_ALIAS = {
 
 @dataclass
 class _ArticleBuilder:
-    """Mutable scratch state while accumulating blocks into an article."""
+    """Mutable scratch state while accumulating blocks into an article.
+
+    list 필드들은 `field(default_factory=list)` 로 초기화. 이전엔 기본값이
+    `None` 이고 `__post_init__` 에서 빈 리스트로 치환하는 패턴이었는데,
+    (1) 타입이 선언(`list[X]`)과 실제 기본값(`None`) 이 어긋나고
+    (2) 누군가 builder 를 수동으로 만들고 `__post_init__` 우회할 경로가 생기면
+    `None.append()` 로 크래시.
+    """
 
     kind: NodeKind
     headline: TextNode | None = None
-    body_blocks: list[TextNode] = None
-    images: list[ImageNode] = None
-    bboxes: list[BoundingBox] = None
+    body_blocks: list[TextNode] = field(default_factory=list)
+    images: list[ImageNode] = field(default_factory=list)
+    bboxes: list[BoundingBox] = field(default_factory=list)
     confidence: float = 1.0
-    block_ids: list[str] = None
-
-    def __post_init__(self) -> None:
-        self.body_blocks = self.body_blocks or []
-        self.images = self.images or []
-        self.bboxes = self.bboxes or []
-        self.block_ids = self.block_ids or []
+    block_ids: list[str] = field(default_factory=list)
 
     def to_node(self, node_id: str) -> ArticleNode:
         return ArticleNode(
@@ -545,7 +546,7 @@ def _process_column(
         # before them, contaminating the body with "see page 2, 4, 7..."
         # listings. We log them but don't emit a node — they have no
         # useful content for downstream consumers.
-        if role == BlockRole.index:
+        if role == BlockRole.toc_index:
             logger.debug(
                 "Dropping index block %s: %s", block.block_id, block.text[:60]
             )
