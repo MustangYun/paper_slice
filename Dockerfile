@@ -81,15 +81,37 @@ ENV HF_HOME=/home/paperslice/.cache/huggingface \
 
 # --- Pre-bake MinerU pipeline 모델 ---
 # 컨테이너 첫 요청에서 수 GB 를 런타임에 당겨오느라 5~8분 SLA 를 깨는 문제 해결.
-# MinerU 3.x 엔트리포인트 이름이 빌드마다 조금씩 다를 수 있어 순차 fallback.
-# 빌드 중 네트워크가 막힌 환경에서는 이 단계가 실패해도 이미지 빌드 자체는
-# 계속되게 `|| true` 로 마감 — 런타임에 다운로드로 폴백 가능.
+#
+# 빌드 모드 두 가지:
+#   BUILD_OFFLINE_TOLERANT=0 (기본) — 프리베이크 필수, 실패 시 빌드도 실패.
+#                                    "모델 없는 이미지가 빌드 성공" 불가능.
+#   BUILD_OFFLINE_TOLERANT=1 (CI / 폐쇄망) — 실패 허용. 이미지는 완성되지만
+#                                    런타임에 모델을 다시 받아야 함.
+# 기본 하드페일 이유: 이전 soft-fallback 설계(|| echo WARNING)가 조용히 실패한
+# 이미지를 배포했고, 사용자가 런타임에 huggingface.co / modelscope.cn 접근 불가로
+# 500 맞던 이슈 다수 (#1, #3, #4, #7, #10).
+ARG BUILD_OFFLINE_TOLERANT=0
 RUN mkdir -p "$HF_HOME" "$MODELSCOPE_CACHE" && \
-    ( mineru-models-download -s modelscope -m pipeline \
-      || mineru models download --source modelscope --model-type pipeline \
-      || python -c "from mineru.cli.models_download import download_models; download_models(source='modelscope', model_type='pipeline')" \
-      || echo "WARNING: MinerU 모델 프리베이크 실패 — 런타임에 다운로드됨" ) \
-    && true
+    if [ "$BUILD_OFFLINE_TOLERANT" = "1" ]; then \
+        echo "INFO: BUILD_OFFLINE_TOLERANT=1 — 프리베이크 실패해도 빌드 계속"; \
+        mineru-models-download -s modelscope -m pipeline \
+          || echo "WARNING: 모델 프리베이크 실패 — 런타임 다운로드 필요 (HF_HUB_OFFLINE 끄고 실행)"; \
+    else \
+        echo "INFO: BUILD_OFFLINE_TOLERANT=0 — 프리베이크 필수, 실패 시 빌드 실패"; \
+        mineru-models-download -s modelscope -m pipeline \
+          && [ -n "$(find "$MODELSCOPE_CACHE" -maxdepth 3 -type f -name '*.safetensors' -o -name '*.pt' -o -name '*.bin' -o -name '*.onnx' 2>/dev/null | head -1)" ] \
+          || (echo "FATAL: 프리베이크 실패 또는 캐시가 비어 있음. BUILD_OFFLINE_TOLERANT=1 로 빌드하거나 네트워크 확인 필요."; exit 1); \
+    fi
+
+# --- 런타임 오프라인 기본값 ---
+# 이미지에 모델이 구워졌으니 런타임에 hub 을 ping 할 이유 없음. huggingface_hub /
+# transformers 가 캐시만 쓰게 강제 → (1) 첫 요청 지연 제거 (2) 네트워크 없어도 동작
+# (3) 실패 시 "cannot reach hub" 대신 "model not in cache" 명확한 에러.
+#
+# 런타임 다운로드를 원하면: docker run -e HF_HUB_OFFLINE=0 -e TRANSFORMERS_OFFLINE=0 ...
+# 또는 docker-compose.yml 의 environment 블록에서 override.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 # --- User & runtime dirs ---
 RUN useradd --create-home --home-dir /home/paperslice --shell /usr/sbin/nologin paperslice && \
