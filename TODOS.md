@@ -1,6 +1,70 @@
 # TODOS
 
-GitHub Flow 마이그레이션(2026-04-24) 에서 의도적으로 deferred된 항목들. 각 항목은 독립 PR로 처리.
+GitHub Flow 마이그레이션(2026-04-24) 및 후속 코드 점검에서 의도적으로 deferred된 항목들. 각 항목은 독립 PR로 처리.
+
+---
+
+## columns.py mypy flow narrowing (12건)
+
+- **What:** `src/paperslice/utils/columns.py:148-177` 의 `positioned` 리스트 순회 시작에 `assert cb.block.bbox is not None` 추가. 135-141줄의 None 필터링을 mypy 가 flow-narrow 못 해서 12개 false positive 발생.
+- **Why:** 지금 CI 는 `mypy || true` 로 무시 중이지만, mypy 를 blocking 하려면(후속 TODO) 이 false positive 부터 처리.
+- **Pros:** mypy strict 로 가는 발판. 런타임 동작 변경 없음 (assert 는 optimized build 에서 제거).
+- **Cons:** 패턴에 따라 `bbox = cb.block.bbox` 로컬 변수 + assert 조합이 더 깔끔할 수 있음.
+- **Depends on:** None. 작은 PR 하나로 정리 가능.
+
+## fitz (PyMuPDF) 타입 스텁
+
+- **What:** `pyproject.toml` 에 다음 추가:
+  ```toml
+  [[tool.mypy.overrides]]
+  module = "fitz"
+  ignore_missing_imports = true
+  ```
+- **Why:** PyMuPDF 는 공식 타입 스텁 제공 안 함. `pdf_chunker.py:48 import fitz` 에서 mypy 에러. 위 override 로 침묵.
+- **Pros:** mypy 전체 passes 에 한 발 더 가까워짐.
+- **Cons:** fitz API 타입 검증 포기 — trade-off 는 받아들일 만함 (MinerU 가 fitz 를 통째로 래핑 중이라 우리는 직접 호출 적음).
+- **Depends on:** None.
+
+## Dockerfile.gpu 결정 (dangling reference)
+
+- **What:** 현재 `scripts/build.sh --gpu` / `scripts/build.ps1 -Gpu` 가 `Dockerfile.gpu` 를 참조하는데 파일 없음. README 에는 "Dockerfile.gpu(CUDA, vlm/hybrid)" 적혀 있어 문서-현실 불일치.
+- **선택지:**
+  - (a) Dockerfile.gpu 작성 (CUDA base image, mineru[vlm] extra 로 변경)
+  - (b) `--gpu` 플래그 제거 + README 수정
+  - (c) 플래그 남기되 "not yet implemented" 로 명확히 exit 시키기
+- **Why:** 사용자가 `--gpu` 쓰면 즉시 실패 ("Dockerfile.gpu: no such file"). 혼란 유발.
+- **Pros (옵션 a):** README 약속 이행. GPU 사용자에게 실질 가치.
+- **Cons (옵션 a):** CUDA base 크고 빌드 복잡. 우선순위 낮음.
+- **Depends on:** GPU 타겟 사용자 유무 판단.
+
+## docker-compose.yml 에 BUILD_OFFLINE_TOLERANT 노출
+
+- **What:** `docker-compose.yml` 의 `build.args` 에 추가:
+  ```yaml
+  BUILD_OFFLINE_TOLERANT: ${BUILD_OFFLINE_TOLERANT:-0}
+  ```
+- **Why:** 현재 `BUILD_OFFLINE_TOLERANT=1` 을 쓰려면 `docker compose build --build-arg BUILD_OFFLINE_TOLERANT=1` 로 CLI 에서 명시해야 함. compose 에 노출하면 env 로 override 가능: `BUILD_OFFLINE_TOLERANT=1 docker compose build`.
+- **Pros:** 폐쇄망 개발자 onboarding 개선. 1줄 추가.
+- **Cons:** 없음.
+- **Depends on:** None.
+
+## scripts/ 에 BUILD_OFFLINE_TOLERANT 플래그
+
+- **What:** `scripts/build.sh` / `scripts/build.ps1` 에 `--tolerate-offline` / `-TolerateOffline` 플래그 추가해서 `BUILD_OFFLINE_TOLERANT=1` 전달.
+- **Why:** 스크립트가 `--corp-ca` 는 지원하는데 tolerant 는 없음. 사내망 사용자가 두 옵션 다 쓰려면 스크립트 우회 필요.
+- **Pros:** 폐쇄망 workflow 일관성.
+- **Cons:** 스크립트 4개 모두 수정 (bash/ps1 × build/run 2종).
+- **Depends on:** compose 에 먼저 노출 여부.
+
+## end-to-end prebake 검증 워크플로우 (on-demand)
+
+- **What:** `.github/workflows/prebake-verify.yml` 을 `workflow_dispatch` 트리거로 새로 만듬. `secrets.CRT_FILE_TEST` 심고 `WITH_CORP_CA=1 BUILD_OFFLINE_TOLERANT=0` 으로 풀 빌드 → 성공 시 green.
+- **Why:** PR #13 에 초기 포함됐다가 GHA 빌드 시간(1시간+) 문제로 뺐음. on-demand 로 분리하면 매 PR 비용 없이 필요 시에만 검증.
+- **Pros:** 릴리즈 전 prebake 정상 동작 확인 가능. corp CA 경로 문서화.
+- **Cons:** workflow_dispatch 는 수동 트리거라 잊기 쉬움. release 브랜치 정책 생길 때 자동화 검토.
+- **Depends on:** None.
+
+---
 
 ---
 
