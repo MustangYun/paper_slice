@@ -30,7 +30,7 @@ from .mineru_runner import (
 from .pdf_chunker import (
     PdfChunk,
     get_page_count,
-    merge_content_lists,
+    merge_chunk_outputs,
     split_pdf_into_chunks,
 )
 from .pdf_type_detector import detect_mineru_method
