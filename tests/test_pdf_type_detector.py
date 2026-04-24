@@ -230,7 +230,6 @@ def test_vertical_detection_fails_gracefully() -> None:
 
 def test_detection_result_is_frozen() -> None:
     """DetectionResult는 불변이어야 함."""
-    import dataclasses
     result = DetectionResult("ocr", "test")
     assert result.method == "ocr"
     assert result.reason == "test"
