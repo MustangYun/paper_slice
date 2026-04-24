@@ -58,14 +58,16 @@ jobs:
         # PR CI 에 적합하지 않다. 이 job 의 역할은 Dockerfile syntax 와 pip
         # 의존성 설치가 깨지지 않았는지 빠른 검증. 실제 프리베이크 검증은 아래
         # docker-build-full job (corp CA 포함) 에서.
+        #
+        # cache 설정 주의: mode=max 는 pip 의존성(~4GB torch/paddle) 전체를 GHA
+        # cache 에 쓰느라 실제 빌드보다 오래 걸린다 (관측: 38분). 현 CI 는 매번
+        # fresh 검증이 목적이므로 cache 제거 — 실제 빌드 시간만 측정.
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: false
           load: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           build-args: |
             BUILD_OFFLINE_TOLERANT=1
           tags: paperslice:ci
@@ -108,14 +110,20 @@ jobs:
         # (1) 사내 CA intercept 환경에서 certs/ 가 제대로 심어졌다
         # (2) MinerU 프리베이크 CLI 가 modelscope 에서 모델 다운로드 성공
         # (3) hard-fail 로직이 정상 (실패하면 job 전체 실패)
+        #
+        # cache 제거 사유: 이전 run(24873275272) 에서 cache-to: type=gha,mode=max
+        # 가 62분 넘게 멈춤. pip 의존성 4GB + 모델 2GB 를 GHA cache 에 쓰느라
+        # 실제 빌드의 2배 이상 소요. 이 job 은 end-to-end 검증이 목적이지
+        # 빌드 가속이 아니므로 cache 불필요.
+        #
+        # docker-container driver 는 큰 이미지 내장 상태로 유지되는데, load: false
+        # 로 runner 에 적재하지 않으면 빌드 종료와 함께 파기 — 디스크 부담 없음.
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: false
           load: false
-          cache-from: type=gha,scope=full
-          cache-to: type=gha,mode=max,scope=full
           build-args: |
             WITH_CORP_CA=1
             BUILD_OFFLINE_TOLERANT=0
