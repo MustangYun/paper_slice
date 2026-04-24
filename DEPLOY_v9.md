@@ -96,9 +96,10 @@ tests/
 ### macOS / Linux (bash)
 
 ```bash
-# 0. v9 소스를 clone 또는 zip 해제
+# 0. v9 소스를 pull (main 에 포함됨)
 git fetch origin
-git checkout claude/optimize-cpu-performance-AiMcN
+git checkout main
+git pull --ff-only
 # 또는
 unzip -o paperslice_v9.zip -d /tmp/paperslice_v9
 
