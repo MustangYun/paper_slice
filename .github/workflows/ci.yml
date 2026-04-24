@@ -52,7 +52,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build CPU image (no push)
+      - name: Build CPU image (syntax + deps only, no prebake)
+        # BUILD_OFFLINE_TOLERANT=1 로 프리베이크 단계를 soft-fail 시킨다.
+        # 이유: 프리베이크는 modelscope 에서 수 GB 모델을 당기므로 30~45분 걸려
+        # PR CI 에 적합하지 않다. CI 의 역할은 Dockerfile syntax 와 pip 의존성
+        # 설치가 깨지지 않았는지 확인 (~3분). 프리베이크 검증은 릴리즈 빌드나
+        # 사용자 로컬 빌드 (BUILD_OFFLINE_TOLERANT=0, 기본값) 에서.
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -61,4 +66,6 @@ jobs:
           load: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_OFFLINE_TOLERANT=1
           tags: paperslice:ci
