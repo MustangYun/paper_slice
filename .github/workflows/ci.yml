@@ -55,9 +55,9 @@ jobs:
       - name: Build CPU image (syntax + deps only, no prebake)
         # BUILD_OFFLINE_TOLERANT=1 로 프리베이크 단계를 soft-fail 시킨다.
         # 이유: 프리베이크는 modelscope 에서 수 GB 모델을 당기므로 30~45분 걸려
-        # PR CI 에 적합하지 않다. CI 의 역할은 Dockerfile syntax 와 pip 의존성
-        # 설치가 깨지지 않았는지 확인 (~3분). 프리베이크 검증은 릴리즈 빌드나
-        # 사용자 로컬 빌드 (BUILD_OFFLINE_TOLERANT=0, 기본값) 에서.
+        # PR CI 에 적합하지 않다. 이 job 의 역할은 Dockerfile syntax 와 pip
+        # 의존성 설치가 깨지지 않았는지 빠른 검증. 실제 프리베이크 검증은 아래
+        # docker-build-full job (corp CA 포함) 에서.
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,3 +69,54 @@ jobs:
           build-args: |
             BUILD_OFFLINE_TOLERANT=1
           tags: paperslice:ci
+
+  docker-build-full:
+    name: docker build (full + corp CA + prebake)
+    # 사용자 사내망(HTTPS MITM intercept) 에 해당하는 CA 를 심어서
+    # 진짜 프리베이크가 성공하는지 검증한다. fork PR 에선 secrets 접근 불가
+    # 라서 이 job 을 skip. 소속 레포의 PR / main push 에서만 실행.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    needs: docker-build  # smoke 가 먼저 green 인 게 전제
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write corp CA cert from secret
+        # CRT_FILE_TEST secret 에 저장된 .crt 파일 전체 내용을 certs/ 에 복원.
+        # Dockerfile 의 `COPY certs* /usr/local/share/ca-certificates/` + `WITH_CORP_CA=1`
+        # 로 빌드 단계에서 update-ca-certificates 가 돌아 시스템 CA 체인에 추가.
+        env:
+          CORP_CA_PEM: ${{ secrets.CRT_FILE_TEST }}
+        run: |
+          if [ -z "$CORP_CA_PEM" ]; then
+            echo "ERROR: CRT_FILE_TEST secret 이 비어 있음 — 이 job 은 secret 접근 가능한 경우에만 실행되어야 함"
+            exit 1
+          fi
+          mkdir -p certs
+          printf '%s\n' "$CORP_CA_PEM" > certs/corp-ca.crt
+          ls -la certs/
+          # 간단한 PEM 형식 체크 (BEGIN CERTIFICATE 있어야 함)
+          head -1 certs/corp-ca.crt | grep -q 'BEGIN CERTIFICATE' \
+            || (echo "ERROR: corp-ca.crt 가 PEM 형식이 아님"; exit 1)
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build CPU image (corp CA + real prebake)
+        # BUILD_OFFLINE_TOLERANT=0 (기본값) + WITH_CORP_CA=1 로 실제 prebake 를
+        # 성공까지 돌린다. 이 job 이 green 이라는 것은:
+        # (1) 사내 CA intercept 환경에서 certs/ 가 제대로 심어졌다
+        # (2) MinerU 프리베이크 CLI 가 modelscope 에서 모델 다운로드 성공
+        # (3) hard-fail 로직이 정상 (실패하면 job 전체 실패)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: false
+          cache-from: type=gha,scope=full
+          cache-to: type=gha,mode=max,scope=full
+          build-args: |
+            WITH_CORP_CA=1
+            BUILD_OFFLINE_TOLERANT=0
+          tags: paperslice:full
